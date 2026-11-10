@@ -1,0 +1,11 @@
+# secrets: signing key, ntfy topic, pairing secret
+secrets/
+*.keystore
+*.jks
+local.properties
+.gradle/
+build/
+*/build/
+.idea/
+*.iml
+.kotlin/

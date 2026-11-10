@@ -1,0 +1,41 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'home.phonelock'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'home.phonelock'
+        minSdk 33
+        targetSdk 36
+        versionCode 1
+        versionName '1.0'
+    }
+
+    signingConfigs {
+        // Our own key, kept with the project so future updates install over the top.
+        lock {
+            storeFile file('../secrets/phonelock.keystore')
+            storePassword 'phonelock'
+            keyAlias 'phonelock'
+            keyPassword 'phonelock'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.lock
+        }
+        debug {
+            signingConfig signingConfigs.lock
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
