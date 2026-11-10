@@ -19,19 +19,27 @@ final class Pairing {
 
     /** Sets the ntfy server and topic, forgetting the last-seen message, and reconnects. */
     static void setRemote(Context c, String server, String topic) {
+        storeRemote(c, server, topic);
+        RemoteService.restart(c);
+    }
+
+    /** Sets the 32-byte base64url secret (empty clears it) and reconnects. Throws if it isn't a valid key. */
+    static void setSecret(Context c, String secret) {
+        storeSecret(c, secret);
+        RemoteService.restart(c);
+    }
+
+    private static void storeRemote(Context c, String server, String topic) {
         Policy.prefs(c).edit()
                 .putString("ntfy_server", server)
                 .putString("ntfy_topic", topic)
                 .remove("ntfy_last_id")
                 .apply();
-        RemoteService.restart(c);
     }
 
-    /** Sets the 32-byte base64url secret (empty clears it). Throws if it isn't a valid key. */
-    static void setSecret(Context c, String secret) {
+    private static void storeSecret(Context c, String secret) {
         if (secret != null && !secret.isEmpty()) Crypto.key(secret); // validates
         Policy.prefs(c).edit().putString("secret", secret == null ? "" : secret).apply();
-        RemoteService.restart(c);
     }
 
     /** Sets the name the parent apps show for this phone, and tells them. */
@@ -49,13 +57,15 @@ final class Pairing {
         String topic = extras.getString(EXTRA_TOPIC, "");
         String secret = extras.getString(EXTRA_SECRET, "");
         if (topic.isEmpty() || secret.isEmpty()) return false;
+        // Store everything first and let the caller start the service once: back-to-back restarts can crash
+        // a foreground service that hasn't called startForeground yet.
         try {
-            setSecret(c, secret);
+            storeSecret(c, secret);
         } catch (IllegalArgumentException e) {
             return false;
         }
-        setRemote(c, extras.getString(EXTRA_SERVER, "https://ntfy.sh"), topic);
-        setName(c, extras.getString(EXTRA_NAME, "Phone"));
+        storeRemote(c, extras.getString(EXTRA_SERVER, "https://ntfy.sh"), topic);
+        Policy.prefs(c).edit().putString("device_name", extras.getString(EXTRA_NAME, "Phone")).apply();
         String pin = extras.getString(EXTRA_PIN, "");
         if (pin.length() >= 4) Policy.setPin(c, pin);
         return true;

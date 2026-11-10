@@ -23,11 +23,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -101,7 +104,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        Hub.refreshAll()
+        Hub.refreshStale()
     }
 }
 
@@ -192,25 +195,15 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
             }
             TextButton(onClick = onAdd) { Text("+ Add phone") }
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(name, style = MaterialTheme.typography.headlineSmall)
-                Text(
-                    (if (connected) "Connected" else "Connecting…") +
-                        (if (state.updated > 0) " · updated ${ago(now - state.updated)}" else " · no reply yet") +
-                        (if (state.parentMode) " · parent mode on" else ""),
-                    style = MaterialTheme.typography.bodySmall)
-            }
-            TextButton(onClick = { Hub.refresh(dev) }) { Text("Refresh") }
-            TextButton(onClick = { menu = true }) { Text("⋮") }
-        }
+        PhoneHeader(name, state, connected, now, onRefresh = { Hub.refresh(dev) }, onMenu = { menu = true })
         BatteryHint()
 
         if (requests.isNotEmpty()) Section("Requests") {
             requests.forEach { r ->
                 // The child suggests a length; the parent picks the actual one (preselected to the ask).
                 var mins by remember(r.req) { mutableLongStateOf(r.minutes) }
-                Text("${r.label}, asked for ${fmtMinutes(r.minutes)} · ${time(r.ts)}", fontWeight = FontWeight.Medium)
+                AppName(dev, r.app, r.label)
+                Text("Asked for ${fmtMinutes(r.minutes)} · ${time(r.ts)}", style = MaterialTheme.typography.bodySmall)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     (GRANT_DURATIONS + r.minutes).distinct().sorted().forEach { m ->
                         FilterChip(selected = mins == m, onClick = { mins = m }, label = { Text(fmtMinutes(m)) })
@@ -225,70 +218,18 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
 
         FindAndReach(dev, name, state, now)
 
-        Section("Allowed right now") {
-            val live = state.grants.filterValues { it > now }
-            if (live.isEmpty()) Text("Only the usual home-screen apps.", style = MaterialTheme.typography.bodyMedium)
-            live.forEach { (pkg, until) ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(state.label(pkg), fontWeight = FontWeight.Medium)
-                        Text("until ${time(until)} (${fmtMinutes((until - now) / 60_000 + 1)} left)",
-                            style = MaterialTheme.typography.bodySmall)
-                    }
-                    TextButton(onClick = {
-                        Hub.grant(dev, pkg, (until - System.currentTimeMillis()) / 60_000 + 30)
-                    }) { Text("+30 min") }
-                    TextButton(onClick = { Hub.revoke(dev, pkg) }) { Text("Stop") }
-                }
-            }
-            if (live.size > 1) OutlinedButton(onClick = { Hub.revoke(dev, "all") }) { Text("Stop all") }
-        }
-
-        Section("Give access") {
-            var pick by remember(dev) { mutableStateOf<String?>(null) }
-            var mins by remember { mutableLongStateOf(60L) }
-            if (state.others.isEmpty()) Text("Tap Refresh to load the phone's apps.", style = MaterialTheme.typography.bodySmall)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                state.others.sortedBy { state.label(it).lowercase() }.forEach { p ->
-                    FilterChip(selected = pick == p, onClick = { pick = p }, label = { Text(state.label(p)) })
-                }
-            }
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                GRANT_DURATIONS.forEach { m ->
-                    FilterChip(selected = mins == m, onClick = { mins = m }, label = { Text(fmtMinutes(m)) })
-                }
-            }
-            Button(onClick = { pick?.let { Hub.grant(dev, it, mins); pick = null } }, enabled = pick != null) {
-                Text(pick?.let { "Allow ${state.label(it)} for ${fmtMinutes(mins)}" } ?: "Pick an app")
-            }
-        }
-
-        Section("Home screen apps") {
-            var adding by remember(dev) { mutableStateOf(false) }
-            state.home.forEach { p ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(state.label(p), Modifier.weight(1f))
-                    var confirm by remember { mutableStateOf(false) }
-                    TextButton(onClick = { confirm = true }) { Text("Remove") }
-                    if (confirm) AlertDialog(
-                        onDismissRequest = { confirm = false },
-                        title = { Text("Remove ${state.label(p)}?") },
-                        text = { Text("It will disappear from the home screen and be hidden.") },
-                        confirmButton = { TextButton(onClick = { Hub.home(dev, "remove", p); confirm = false }) { Text("Remove") } },
-                        dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } })
-                }
-            }
-            OutlinedButton(onClick = { adding = !adding }) { Text(if (adding) "Done" else "Add an app…") }
-            if (adding) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                state.others.sortedBy { state.label(it).lowercase() }.forEach { p ->
-                    OutlinedButton(onClick = { Hub.home(dev, "add", p); adding = false }) { Text("+ ${state.label(p)}") }
-                }
-            }
-        }
+        AllowedNowSection(dev, state, now)
+        AllowForAWhileSection(dev, state)
+        AppTableSection(dev, state)
+        ScheduleSection(dev, state)
 
         if (events.isNotEmpty()) Section("Activity") {
             events.take(20).forEach { e ->
-                Text("${time(e.ts)}  ${e.text}", style = MaterialTheme.typography.bodySmall)
+                Row {
+                    Text(time(e.ts), Modifier.width(72.dp), style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(e.text, style = MaterialTheme.typography.bodyMedium)
+                }
             }
         }
     }
@@ -358,10 +299,10 @@ private fun BatteryHint() {
 
 @Composable
 internal fun Section(title: String, content: @Composable () -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            HorizontalDivider()
+    // Soft, borderless cards with a little more room; the shared shape for every section.
+    ElevatedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+        Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             content()
         }
     }

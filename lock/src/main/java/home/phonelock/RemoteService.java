@@ -57,6 +57,7 @@ public class RemoteService extends Service {
                 .setOngoing(true)
                 .build();
         startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        getMainExecutor().execute(() -> Ringer.recover(this));
         if (!running) {
             running = true;
             listener = new Thread(this::listenLoop, "ntfy");
@@ -88,11 +89,20 @@ public class RemoteService extends Service {
         return Policy.prefs(c).getString("ntfy_topic", "");
     }
 
-    /** Re-apply policy whenever the set of live grants changes (i.e. one expired). */
+    /**
+     * Re-apply policy whenever the set of live grants changes (one expired) or the schedule's situation
+     * changes (e.g. bedtime starts), and tell the child and the parents.
+     */
     private void expiryLoop() {
         Set<String> last = new TreeSet<>(Grants.load(this).keySet());
+        int lastMode = Schedule.currentMode(this);
         while (running) {
             try { Thread.sleep(20_000); } catch (InterruptedException e) { if (!running) return; }
+            int mode = Schedule.currentMode(this);
+            if (mode != lastMode) {
+                lastMode = mode;
+                onModeChanged(mode);
+            }
             Set<String> now = new TreeSet<>(Grants.load(this).keySet());
             if (!now.equals(last)) {
                 Set<String> gone = new TreeSet<>(last);
@@ -112,6 +122,19 @@ public class RemoteService extends Service {
                 }
                 last = now;
             }
+        }
+    }
+
+    /** A schedule boundary passed: re-lock and report it. */
+    private void onModeChanged(int mode) {
+        // Apps that are no longer allowed get hidden, which closes them; the home screen re-reads on its tick.
+        Policy.apply(this);
+        long until = Schedule.currentModeUntil(this);
+        String txt = (mode == Schedule.NORMAL ? "Normal hours" : Schedule.modeLabel(mode))
+                + (until > 0 ? " until " + Remote.time(this, until) : "");
+        if (Remote.paired(this)) {
+            Remote.event(this, txt, null, true); // routine: activity list only
+            Remote.sendState(this, false);
         }
     }
 

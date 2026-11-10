@@ -33,12 +33,15 @@ final class Ringer {
     private static String caller = "";
     /** Application context captured by {@link #start}, for the auto-stop timer. */
     private static Context appCtx;
-    private static final Runnable AUTO_STOP = () -> stop(null, "Ringing stopped after the time ran out");
+    private static final Runnable AUTO_STOP = () -> stop(null, "Ringing stopped after the time ran out", null);
 
     private Ringer() {}
 
+    /** True from start until stop, even if the sound itself failed to play (it still vibrates). */
+    private static boolean ringing;
+
     static boolean isRinging() {
-        return player != null;
+        return ringing;
     }
 
     /** Name of the parent who started the current ring, for the ring screen. */
@@ -57,10 +60,13 @@ final class Ringer {
         MAIN.removeCallbacks(AUTO_STOP);
         MAIN.postDelayed(AUTO_STOP, Math.max(10, Math.min(MAX_SECONDS, seconds)) * 1000L);
         showScreen(app);
-        if (player != null) return; // already ringing: just extended
+        if (ringing) return; // already ringing: just extended
+        ringing = true;
 
         AudioManager am = app.getSystemService(AudioManager.class);
         savedVolume = am.getStreamVolume(AudioManager.STREAM_ALARM);
+        // Remember the volume on disk too, so a crash mid-ring doesn't leave the alarm at full volume.
+        Policy.prefs(app).edit().putInt("ring_saved_volume", savedVolume).apply();
         am.setStreamVolume(AudioManager.STREAM_ALARM, am.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0);
         liftTotalSilence(app);
 
@@ -76,7 +82,8 @@ final class Ringer {
             mp.start();
             player = mp;
         } catch (Exception e) {
-            Log.w(Policy.TAG, "ring: " + e);
+            // No alarm sound (e.g. set to None): keep the vibration and the screen; stop() still cleans up.
+            Log.w(Policy.TAG, "ring sound: " + e);
         }
 
         Vibrator v = app.getSystemService(Vibrator.class);
@@ -89,17 +96,21 @@ final class Ringer {
 
     /**
      * Stops ringing and restores the audio settings. {@code eventText}, if not null, is reported to the
-     * parents (e.g. who stopped it). Does nothing if not ringing.
+     * parents; {@code by} is the parent who stopped it, or null if the child did or it timed out (then the
+     * parents are notified). Does nothing if not ringing.
      */
-    static void stop(Context c, String eventText) {
+    static void stop(Context c, String eventText, String by) {
         MAIN.removeCallbacks(AUTO_STOP);
+        if (!ringing) return;
+        ringing = false;
         MediaPlayer mp = player;
-        if (mp == null) return;
         player = null;
-        try {
-            mp.stop();
-        } catch (Exception ignored) {}
-        mp.release();
+        if (mp != null) {
+            try {
+                mp.stop();
+            } catch (Exception ignored) {}
+            mp.release();
+        }
 
         Context app = c != null ? c.getApplicationContext() : appCtx;
         Vibrator v = app.getSystemService(Vibrator.class);
@@ -107,11 +118,24 @@ final class Ringer {
         AudioManager am = app.getSystemService(AudioManager.class);
         if (savedVolume >= 0) am.setStreamVolume(AudioManager.STREAM_ALARM, savedVolume, 0);
         savedVolume = -1;
+        Policy.prefs(app).edit().remove("ring_saved_volume").apply();
         restoreFilter(app);
 
         app.sendBroadcast(new Intent(RingActivity.ACTION_CLOSE).setPackage(app.getPackageName()));
-        if (eventText != null) Remote.event(app, eventText);
+        if (eventText != null) Remote.event(app, eventText, by, false);
         Remote.sendState(app, false);
+    }
+
+    /**
+     * After a crash or reboot mid-ring, puts the alarm volume back. Call when the app starts (the remote
+     * service does); does nothing if no ring was interrupted.
+     */
+    static void recover(Context c) {
+        if (ringing) return;
+        int v = Policy.prefs(c).getInt("ring_saved_volume", -1);
+        if (v < 0) return;
+        c.getSystemService(AudioManager.class).setStreamVolume(AudioManager.STREAM_ALARM, v, 0);
+        Policy.prefs(c).edit().remove("ring_saved_volume").apply();
     }
 
     private static void showScreen(Context app) {

@@ -1,0 +1,29 @@
+# ntfy settings for the PhoneLock hub. Docs: https://docs.ntfy.sh/config/
+# nginx passes the visitor's real address (Cloudflare's CF-Connecting-IP) as X-Forwarded-For, so rate
+# limits apply per household rather than per Cloudflare edge.
+behind-proxy: true
+
+# Messages kept 12 h so a phone that was offline catches up; attachments (screenshots, icons) 3 h.
+cache-file: /var/cache/ntfy/cache.db
+cache-duration: 12h
+attachment-cache-dir: /var/cache/ntfy/attachments
+attachment-file-size-limit: 2M
+attachment-total-size-limit: 2G
+attachment-expiry-duration: 3h
+
+# Firebase Cloud Messaging (each message also goes to the FCM topic of the same name, so the parent app
+# needs no permanent "listening" notification) is switched on with NTFY_FIREBASE_KEY_FILE in .env.
+
+# Phones are anonymous; each family's topic name and key are their secret. Limits are per visitor (IP)
+# and sized for a household behind one address, with room to spare.
+visitor-request-limit-burst: 120
+visitor-request-limit-replenish: 2s
+visitor-message-daily-limit: 5000
+visitor-subscription-limit: 60
+visitor-attachment-total-size-limit: 200M
+visitor-attachment-daily-bandwidth-limit: 1G
+
+# No web UI, no e-mail, no calls: just the relay.
+web-root: disable
+enable-signup: false
+enable-login: false

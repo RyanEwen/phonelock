@@ -61,7 +61,7 @@ public class RingActivity extends Activity {
         stop.setTextSize(24);
         stop.setOnClickListener(v -> {
             String name = Policy.prefs(this).getString("device_name", "The phone");
-            Ringer.stop(this, name + " stopped the ringing");
+            Ringer.stop(this, name + " stopped the ringing", null);
             finish();
         });
         LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(dp(220), dp(88));

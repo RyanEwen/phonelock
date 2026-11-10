@@ -1,0 +1,35 @@
+# PhoneLock hub on the "apps" host: a self-hosted ntfy server behind the host's shared nginx
+# (Cloudflare-proxied DNS -> nginx :80 -> phonelock-hub). No host ports are published.
+# Messages are end-to-end encrypted by the apps; the hub only relays and stores ciphertext.
+services:
+  hub:
+    image: binwiederhier/ntfy:v2.37.2
+    command: serve
+    container_name: phonelock-hub
+    restart: unless-stopped
+    environment:
+      NTFY_BASE_URL: https://${PHONELOCK_DOMAIN}
+      # Set in .env once secrets/firebase.json is in place: /etc/ntfy/secrets/firebase.json
+      NTFY_FIREBASE_KEY_FILE: ${NTFY_FIREBASE_KEY_FILE:-}
+    volumes:
+      - ./server.yml:/etc/ntfy/server.yml:ro
+      - ./secrets:/etc/ntfy/secrets:ro
+      - hub-cache:/var/cache/ntfy
+    networks: [default, nginx_default]
+    security_opt: [no-new-privileges:true]
+    pids_limit: ${HUB_PIDS_LIMIT:-256}
+    mem_limit: ${HUB_MEMORY_LIMIT:-512m}
+    memswap_limit: ${HUB_MEMORY_LIMIT:-512m}
+    cpus: ${HUB_CPU_LIMIT:-1.0}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --tries=1 http://localhost:80/v1/health -O - | grep -q true"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  hub-cache:
+
+networks:
+  nginx_default:
+    external: true

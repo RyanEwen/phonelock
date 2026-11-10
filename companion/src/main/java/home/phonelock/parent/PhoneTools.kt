@@ -1,8 +1,8 @@
 package home.phonelock.parent
 
 import android.content.Context
-import android.content.SharedPreferences
 import android.graphics.BitmapFactory
+import android.location.Geocoder
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -13,8 +13,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import kotlin.concurrent.thread
 
 /** Reply to "find": a position (when [lat] is set) and/or an [error], plus battery. */
@@ -27,6 +25,8 @@ data class PhoneLocation(
     val battery: Int? = null,
     val charging: Boolean = false,
     val error: String? = null,
+    /** Street address from the system geocoder, filled in shortly after the fix arrives (may stay null). */
+    val address: String? = null,
 )
 
 /** Reply to "view screen": the decrypted image, or an [error]. [label] names the app that was on screen. */
@@ -47,6 +47,12 @@ object PhoneTools {
     val locating = MutableStateFlow<Set<String>>(emptySet())
     val capturing = MutableStateFlow<Set<String>>(emptySet())
 
+    private lateinit var app: Context
+
+    fun init(c: Context) {
+        app = c.applicationContext
+    }
+
     /** Request id -> device, for requests sent from this app. */
     private val myRequests = LinkedHashMap<String, String>()
 
@@ -58,24 +64,10 @@ object PhoneTools {
     fun find(dev: String) = request(dev, "locate", locating)
 
     /**
-     * Asks [dev] for a screenshot. [letThemKnow] decides whether the phone shows the child a "viewed your
-     * screen" notice; the parents' activity log records the view either way.
+     * Asks [dev] for a screenshot. The phone always shows the child a "viewed your screen" notice and the
+     * parents' activity log records the view.
      */
-    fun viewScreen(dev: String) = request(dev, "screen", capturing) { it.put("notify", letThemKnow.value) }
-
-    /** Remembered choice for "Let them know" on screen views. Defaults to telling the child. */
-    val letThemKnow = MutableStateFlow(true)
-    private lateinit var prefs: SharedPreferences
-
-    fun init(c: Context) {
-        prefs = c.getSharedPreferences("tools", Context.MODE_PRIVATE)
-        letThemKnow.value = prefs.getBoolean("let_them_know", true)
-    }
-
-    fun setLetThemKnow(on: Boolean) {
-        letThemKnow.value = on
-        prefs.edit().putBoolean("let_them_know", on).apply()
-    }
+    fun viewScreen(dev: String) = request(dev, "screen", capturing)
 
     private fun request(dev: String, type: String, inFlight: MutableStateFlow<Set<String>>,
                         extra: (JSONObject) -> Unit = {}) {
@@ -126,6 +118,27 @@ object PhoneTools {
             error = m.optString("error").takeIf { it.isNotEmpty() },
         )
         _locations.update { it + (dev to loc) }
+        if (loc.lat != null && loc.lng != null) lookUpAddress(dev, loc)
+    }
+
+    /**
+     * Turns the fix into a street address with Android's geocoder (Google Play services on the parent's
+     * phone). Best effort: no geocoder, no network or no result just leaves the address empty.
+     */
+    private fun lookUpAddress(dev: String, loc: PhoneLocation) {
+        if (!Geocoder.isPresent()) return
+        try {
+            Geocoder(app).getFromLocation(loc.lat!!, loc.lng!!, 1) { results ->
+                val line = results.firstOrNull()?.getAddressLine(0) ?: return@getFromLocation
+                // Only fill in the fix it belongs to; a newer "Location" tap may have replaced it.
+                _locations.update { m ->
+                    val cur = m[dev]
+                    if (cur?.ts == loc.ts) m + (dev to cur.copy(address = line)) else m
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "geocode: $e")
+        }
     }
 
     private fun onScreen(d: Device, m: JSONObject, attachmentUrl: String?) {
@@ -135,11 +148,6 @@ object PhoneTools {
         if (error != null || attachmentUrl == null) {
             capturing.update { it - d.id }
             setScreen(d.id, PhoneScreen(ts, label = label, error = error ?: "No image received"))
-            return
-        }
-        // Only fetch from the phone's own ntfy server; the URL comes from the unencrypted ntfy envelope.
-        if (!attachmentUrl.startsWith(d.server + "/")) {
-            capturing.update { it - d.id }
             return
         }
         thread(name = "shot") {
@@ -156,17 +164,9 @@ object PhoneTools {
     private fun setScreen(dev: String, s: PhoneScreen) =
         _screens.update { cur -> if ((cur[dev]?.ts ?: 0) > s.ts) cur else cur + (dev to s) }
 
-    /** Fetches and decrypts the attachment; its AAD binds it to the sealed message [msgId]. */
+    /** Fetches and decrypts the screenshot attached to sealed message [msgId]. */
     private fun download(d: Device, url: String, msgId: String): ImageBitmap? {
-        val h = URL(url).openConnection() as HttpURLConnection
-        h.connectTimeout = 15_000
-        h.readTimeout = 30_000
-        val enc = try {
-            h.inputStream.use { it.readBytes() }
-        } finally {
-            h.disconnect()
-        }
-        val jpeg = Crypto.openBytes(Crypto.key(d.secret), enc, "phonelock/blob/$msgId") ?: return null
+        val jpeg = Attachments.fetch(d, url, msgId) ?: return null
         return BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)?.asImageBitmap()
     }
 }

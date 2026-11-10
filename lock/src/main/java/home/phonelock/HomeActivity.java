@@ -30,6 +30,10 @@ public class HomeActivity extends Activity {
     private final Handler h = new Handler(Looper.getMainLooper());
     private AppGrid homeGrid, allowedGrid;
     private TextView allowedHeading;
+    /** "Bedtime until 7:00 AM" under the date; hidden in normal hours. */
+    private TextView modeText;
+    /** Situation the screen was last built for, so the tick refreshes when it changes. */
+    private int shownMode = -1;
     private LinearLayout parentBar;
     private TextView parentText;
     private boolean receiversOn;
@@ -37,6 +41,13 @@ public class HomeActivity extends Activity {
     private final BroadcastReceiver pkgReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) {
             Policy.apply(c);
+            refresh();
+        }
+    };
+
+    /** Policy was re-applied (grant, schedule, app changes): redraw. */
+    private final BroadcastReceiver policyChanged = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
             refresh();
         }
     };
@@ -49,6 +60,12 @@ public class HomeActivity extends Activity {
 
     private final Runnable tick = new Runnable() {
         @Override public void run() {
+            // Pick up schedule changes (bedtime starting) while the home screen is showing.
+            int mode = Schedule.currentMode(HomeActivity.this);
+            if (mode != shownMode) {
+                shownMode = mode;
+                refresh();
+            }
             if (!Policy.inParentMode(HomeActivity.this) && parentBar.getVisibility() == View.VISIBLE) {
                 endParentMode();
             } else {
@@ -66,7 +83,10 @@ public class HomeActivity extends Activity {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.rgb(16, 18, 24));
+        // Deep blue-grey to near black, top to bottom: calm, and icons stand out against it.
+        root.setBackground(new android.graphics.drawable.GradientDrawable(
+                android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{Color.rgb(28, 34, 52), Color.rgb(12, 13, 18)}));
         root.setPadding(dp(16), dp(40), dp(16), dp(16));
         root.setFitsSystemWindows(true);
 
@@ -98,6 +118,17 @@ public class HomeActivity extends Activity {
                 return true;
             }
         });
+
+        modeText = new TextView(this);
+        modeText.setTextColor(Color.rgb(255, 214, 150));
+        modeText.setTextSize(15);
+        modeText.setBackground(rounded(Color.argb(60, 255, 190, 90), 50));
+        modeText.setPadding(dp(16), dp(6), dp(16), dp(6));
+        modeText.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(-2, -2);
+        ml.gravity = Gravity.CENTER_HORIZONTAL;
+        ml.topMargin = dp(12);
+        root.addView(modeText, ml);
 
         parentBar = new LinearLayout(this);
         parentBar.setOrientation(LinearLayout.VERTICAL);
@@ -140,8 +171,12 @@ public class HomeActivity extends Activity {
 
         Button ask = button("Ask for an app", v -> askForApp());
         ask.setTextColor(Color.WHITE);
-        ask.setBackgroundColor(Color.rgb(40, 46, 60));
-        root.addView(ask, new LinearLayout.LayoutParams(-1, -2));
+        ask.setBackground(rounded(Color.rgb(52, 60, 84), 28));
+        ask.setTextSize(16);
+        ask.setStateListAnimator(null);
+        LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(-1, dp(56));
+        al.setMargins(dp(8), dp(8), dp(8), dp(4));
+        root.addView(ask, al);
 
         setContentView(root);
     }
@@ -157,7 +192,7 @@ public class HomeActivity extends Activity {
             Toast.makeText(this, "Nothing to ask for", Toast.LENGTH_SHORT).show();
             return;
         }
-        // Icons, not a text list: easier to find the app she means.
+        // Icons, not a text list: easier to find the app you mean.
         AppGrid grid = new AppGrid(this);
         int pad = dp(16);
         grid.setPadding(pad, pad, pad, pad);
@@ -189,6 +224,7 @@ public class HomeActivity extends Activity {
             registerReceiver(pkgReceiver, pf, Context.RECEIVER_EXPORTED);
             registerReceiver(screenOff, new IntentFilter(Intent.ACTION_SCREEN_OFF),
                     Context.RECEIVER_EXPORTED);
+            registerReceiver(policyChanged, new IntentFilter(Policy.ACTION_CHANGED), Context.RECEIVER_NOT_EXPORTED);
             receiversOn = true;
         }
         Policy.apply(this);
@@ -213,6 +249,7 @@ public class HomeActivity extends Activity {
         if (receiversOn) {
             unregisterReceiver(pkgReceiver);
             unregisterReceiver(screenOff);
+            unregisterReceiver(policyChanged);
         }
         h.removeCallbacksAndMessages(null);
         super.onDestroy();
@@ -311,13 +348,26 @@ public class HomeActivity extends Activity {
         }
     }
 
-    /** Rebuilds both sections: permanent home apps, and apps allowed for now (with their end time). */
+    /**
+     * Rebuilds the screen: the situation line, the scheduled apps allowed now, and apps a parent allowed for a
+     * while (with their end time).
+     */
     private void refresh() {
-        homeGrid.setApps(AppGrid.load(this, Policy.visibleApps(this), true), e -> launch(e.pkg));
+        int mode = Schedule.currentMode(this);
+        long until = Schedule.currentModeUntil(this);
+        if (mode == Schedule.NORMAL) {
+            modeText.setVisibility(View.GONE);
+        } else {
+            modeText.setText(Schedule.modeLabel(mode) + (until > 0 ? " until " + Remote.time(this, until) : ""));
+            modeText.setVisibility(View.VISIBLE);
+        }
+
+        List<String> scheduled = Schedule.allowedNow(this);
+        homeGrid.setApps(AppGrid.load(this, scheduled, true), e -> launch(e.pkg));
 
         java.util.Map<String, Long> grants = Grants.load(this);
         List<String> extra = new ArrayList<>();
-        for (String p : grants.keySet()) if (!Policy.visibleApps(this).contains(p)) extra.add(p);
+        for (String p : grants.keySet()) if (!scheduled.contains(p)) extra.add(p);
         List<AppGrid.Entry> allowed = AppGrid.load(this, extra, true);
         for (AppGrid.Entry e : allowed) e.note = "until " + Remote.time(this, grants.get(e.pkg));
         allowedGrid.setApps(allowed, e -> launch(e.pkg));
@@ -332,6 +382,14 @@ public class HomeActivity extends Activity {
         b.setAllCaps(false);
         b.setOnClickListener(l);
         return b;
+    }
+
+    /** A rounded rectangle of {@code color} with corner radius {@code radiusDp}. */
+    private android.graphics.drawable.GradientDrawable rounded(int color, int radiusDp) {
+        android.graphics.drawable.GradientDrawable d = new android.graphics.drawable.GradientDrawable();
+        d.setColor(color);
+        d.setCornerRadius(dp(radiusDp));
+        return d;
     }
 
     private int dp(int v) {

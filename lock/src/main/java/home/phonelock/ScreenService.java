@@ -53,10 +53,10 @@ public class ScreenService extends AccessibilityService {
     /**
      * Captures the screen for request {@code req} from parent {@code who} and publishes it as an encrypted
      * ntfy attachment with a sealed {@code shot} message. Failures are published as {@code shot} with an
-     * {@code error}. If {@code notifyChild}, the child is then told who looked (posted after the capture, so
-     * the notice isn't in the picture); either way the view is logged for the parents.
+     * {@code error}. The child is then told who looked (posted after the capture, so the notice isn't in
+     * the picture) and the view is logged for the parents.
      */
-    static void capture(Context c, String req, String who, boolean notifyChild) {
+    static void capture(Context c, String req, String who) {
         ScreenService s = instance;
         if (s == null) {
             reply(c, req, null, "Screen view isn't switched on. On the phone, unlock parent mode and turn on Settings > Accessibility > Parent screen view", null);
@@ -75,7 +75,7 @@ public class ScreenService extends AccessibilityService {
                     try {
                         byte[] jpeg = encode(r.getHardwareBuffer(), r.getColorSpace());
                         reply(c, req, jpeg, null, app);
-                        recordView(c, who, notifyChild);
+                        recordView(c, who);
                     } catch (Exception e) {
                         Log.w(Policy.TAG, "shot encode: " + e);
                         reply(c, req, null, "Couldn't capture the screen", app);
@@ -90,18 +90,18 @@ public class ScreenService extends AccessibilityService {
     }
 
     /**
-     * Records that {@code who} looked at the screen: a notice for the child when {@code notifyChild}
-     * (one notification updated in place), and an entry in the parents' activity log at most once per
-     * parent every {@link #LOG_EVERY_MS}, so auto-refresh doesn't flood either side.
+     * Records that {@code who} looked at the screen: a notice for the child (one notification updated in
+     * place), and an entry in the parents' activity log at most once per parent every {@link #LOG_EVERY_MS},
+     * so auto-refresh doesn't flood either side.
      */
-    private static void recordView(Context c, String who, boolean notifyChild) {
-        if (notifyChild) Remote.notifyKid(c, who + " viewed your screen", NOTICE_ID);
+    private static void recordView(Context c, String who) {
+        Remote.notifyKid(c, who + " viewed your screen", NOTICE_ID);
         android.content.SharedPreferences p = Policy.prefs(c);
-        String key = "shot_logged_" + who + (notifyChild ? "" : "_quiet");
+        String key = "shot_logged_" + who;
         long now = System.currentTimeMillis();
         if (now - p.getLong(key, 0) < LOG_EVERY_MS) return;
         p.edit().putLong(key, now).apply();
-        Remote.event(c, who + " viewed the screen" + (notifyChild ? "" : " (not shown on the phone)"));
+        Remote.event(c, who + " viewed the screen", who, false);
     }
 
     /** Closes the notification shade if it's open (so the ring screen is visible). No-op if not enabled. */

@@ -2,6 +2,11 @@ plugins {
     id 'com.android.application'
 }
 
+// Keystore passwords live with the keystore in secrets/ (git-ignored), not in this public file.
+def signing = new Properties()
+def signingFile = rootProject.file('secrets/signing.properties')
+if (signingFile.exists()) signingFile.withInputStream { signing.load(it) }
+
 android {
     namespace 'home.phonelock'
     compileSdk 36
@@ -18,9 +23,9 @@ android {
         // Our own key, kept with the project so future updates install over the top.
         lock {
             storeFile file('../secrets/phonelock.keystore')
-            storePassword 'phonelock'
+            storePassword signing.getProperty('storePassword')
             keyAlias 'phonelock'
-            keyPassword 'phonelock'
+            keyPassword signing.getProperty('keyPassword')
         }
     }
 

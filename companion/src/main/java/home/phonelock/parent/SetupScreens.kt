@@ -17,6 +17,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -85,9 +87,23 @@ internal fun SetupPhoneScreen(done: (String?) -> Unit) {
     }
 }
 
+/**
+ * Keeps the screen out of screenshots and the recent-apps preview while it's shown: the setup and pairing
+ * codes carry the phone's key (and the setup code the PIN).
+ */
+@Composable
+private fun SecureScreen() {
+    val activity = LocalContext.current as? android.app.Activity ?: return
+    DisposableEffect(Unit) {
+        activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+        onDispose { activity.window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE) }
+    }
+}
+
 /** The setup QR code and what to do with it. */
 @Composable
 private fun SetupCode(device: Device, payload: String, done: () -> Unit) {
+    SecureScreen()
     Column(Modifier.safeDrawingPadding().padding(20.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Set up ${device.name}'s phone", style = MaterialTheme.typography.headlineSmall)
@@ -108,6 +124,7 @@ private fun SetupCode(device: Device, payload: String, done: () -> Unit) {
 /** Lets another parent add [device] to their app by scanning its pairing code. */
 @Composable
 internal fun SharePhoneDialog(device: Device, close: () -> Unit) {
+    SecureScreen()
     AlertDialog(
         onDismissRequest = close,
         title = { Text("Share ${device.name}'s phone") },

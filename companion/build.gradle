@@ -4,6 +4,18 @@ plugins {
     id 'org.jetbrains.kotlin.plugin.compose'
 }
 
+// Keystore passwords live with the keystore in secrets/ (git-ignored), not in this public file.
+def signing = new Properties()
+def signingFile = rootProject.file('secrets/signing.properties')
+if (signingFile.exists()) signingFile.withInputStream { signing.load(it) }
+
+// Firebase (push through the PhoneLock hub) and the hub address, from secrets/firebase.properties if present.
+// Without it the app keeps its own background connection, as before.
+def firebase = new Properties()
+def firebaseFile = rootProject.file('secrets/firebase.properties')
+if (firebaseFile.exists()) firebaseFile.withInputStream { firebase.load(it) }
+def quoted = { String key -> '"' + (firebase.getProperty(key) ?: '') + '"' }
+
 android {
     namespace 'home.phonelock.parent'
     compileSdk 36
@@ -14,14 +26,19 @@ android {
         targetSdk 36
         versionCode 1
         versionName '1.0'
+        buildConfigField 'String', 'FCM_APP_ID', quoted('appId')
+        buildConfigField 'String', 'FCM_API_KEY', quoted('apiKey')
+        buildConfigField 'String', 'FCM_PROJECT_ID', quoted('projectId')
+        buildConfigField 'String', 'FCM_SENDER_ID', quoted('senderId')
+        buildConfigField 'String', 'HUB_URL', quoted('hubUrl')
     }
 
     signingConfigs {
         lock {
             storeFile file('../secrets/phonelock.keystore')
-            storePassword 'phonelock'
+            storePassword signing.getProperty('storePassword')
             keyAlias 'phonelock'
-            keyPassword 'phonelock'
+            keyPassword signing.getProperty('keyPassword')
         }
     }
 
@@ -38,7 +55,7 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = '17' }
-    buildFeatures { compose true }
+    buildFeatures { compose true; buildConfig true }
 }
 
 dependencies {
@@ -54,6 +71,9 @@ dependencies {
     implementation "androidx.camera:camera-lifecycle:$camerax"
     implementation "androidx.camera:camera-view:$camerax"
     implementation 'com.google.mlkit:barcode-scanning:17.3.0'
+    // Push through the PhoneLock hub (approved: Firebase Cloud Messaging)
+    implementation platform('com.google.firebase:firebase-bom:35.1.0')
+    implementation 'com.google.firebase:firebase-messaging'
     // Drawing setup and pairing QR codes (approved: ZXing core)
     implementation 'com.google.zxing:core:3.5.4'
 }

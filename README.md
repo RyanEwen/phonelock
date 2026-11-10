@@ -8,6 +8,10 @@ Two Android apps for locking down a child's phone:
   Parents can grant apps temporarily over [ntfy](https://ntfy.sh).
 - **companion/** – parent app: sets up and pairs child phones, answers requests, grants and revokes apps, finds, rings and views the phone.
 
+## Hub (server)
+
+Both apps talk through an [ntfy](https://ntfy.sh) server. `server/` runs our own (ntfy + Caddy in Docker) with Firebase Cloud Messaging, so parent phones get messages by push instead of a permanent background connection; see `server/README.md`. The parent app reads the hub address and Firebase settings from `secrets/firebase.properties` (`hubUrl`, `appId`, `apiKey`, `projectId`, `senderId`); without it, it uses ntfy.sh and its own connection. Only the parent app is meant for Google Play; the lock app installs through the setup QR code.
+
 ## Build (WSL)
 
 ```bash
@@ -45,7 +49,7 @@ Then pair it and switch on screen view and ringing through Do Not Disturb (needs
 tools/configure-lock.sh <slug> [adb-serial]
 ```
 
-Parents can then find the phone (opens Google Maps), ring it at full volume and view its screen from the parent app. Each screen view can tell the kid or not (the parent's choice, remembered); both parents' activity logs record every view, and location is kept switched on.
+Parents can then find the phone (opens Google Maps), ring it at full volume and view its screen from the parent app. The kid gets a notice whenever a parent views the screen, both parents' activity logs record every view, and location is kept switched on.
 
 ## adb control
 

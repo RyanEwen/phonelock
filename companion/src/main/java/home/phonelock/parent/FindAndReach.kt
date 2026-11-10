@@ -4,6 +4,20 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -29,6 +43,21 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
+/** A tonal button with an icon over its label, for the Location / Ring / View screen row. */
+@Composable
+private fun ActionTile(icon: ImageVector, label: String, modifier: Modifier = Modifier, enabled: Boolean = true,
+                       highlighted: Boolean = false, onClick: () -> Unit) {
+    FilledTonalButton(onClick = onClick, enabled = enabled, modifier = modifier.heightIn(min = 76.dp),
+        shape = RoundedCornerShape(20.dp), contentPadding = PaddingValues(8.dp),
+        colors = if (highlighted) ButtonDefaults.filledTonalButtonColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer) else ButtonDefaults.filledTonalButtonColors()) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Icon(icon, contentDescription = null)
+            Text(label, style = MaterialTheme.typography.labelLarge, textAlign = TextAlign.Center, maxLines = 2)
+        }
+    }
+}
+
 /** Auto-refresh cadence and length for "Keep refreshing" on the screen view. */
 private const val REFRESH_EVERY_MS = 10_000L
 private const val REFRESH_FOR_MS = 2 * 60_000L
@@ -44,26 +73,22 @@ internal fun FindAndReach(dev: String, name: String, state: PhoneState, now: Lon
     val screens by PhoneTools.screens.collectAsState()
     val locating by PhoneTools.locating.collectAsState()
     val capturing by PhoneTools.capturing.collectAsState()
-    val letThemKnow by PhoneTools.letThemKnow.collectAsState()
     var confirmRing by remember { mutableStateOf(false) }
 
     Section("Find and reach") {
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { PhoneTools.find(dev) }, enabled = dev !in locating) {
-                Text(if (dev in locating) "Finding…" else "Find")
-            }
+        // Three equal tonal tiles: icon above label, easy to hit with a thumb.
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            ActionTile(Icons.Default.LocationOn, if (dev in locating) "Locating…" else "Location",
+                enabled = dev !in locating, modifier = Modifier.weight(1f)) { PhoneTools.find(dev) }
             if (state.ringing) {
-                Button(onClick = { PhoneTools.stopRinging(dev) }) { Text("Stop ringing") }
+                ActionTile(Icons.Default.Notifications, "Stop ringing", highlighted = true,
+                    modifier = Modifier.weight(1f)) { PhoneTools.stopRinging(dev) }
             } else {
-                OutlinedButton(onClick = { confirmRing = true }) { Text("Ring") }
+                ActionTile(Icons.Default.Notifications, "Ring", modifier = Modifier.weight(1f)) { confirmRing = true }
             }
-            OutlinedButton(onClick = { PhoneTools.viewScreen(dev) }, enabled = dev !in capturing) {
-                Text(if (dev in capturing) "Capturing…" else "View screen")
-            }
+            ActionTile(Icons.Default.Face, if (dev in capturing) "Capturing…" else "View screen",
+                enabled = dev !in capturing, modifier = Modifier.weight(1f)) { PhoneTools.viewScreen(dev) }
         }
-        // Applies to each screen view (and auto-refresh) from now on; the choice is remembered.
-        FilterChip(selected = letThemKnow, onClick = { PhoneTools.setLetThemKnow(!letThemKnow) },
-            label = { Text(if (letThemKnow) "Let them know when I view" else "View without telling them") })
         locations[dev]?.let { LocationResult(it, name, now) }
         screens[dev]?.let { ScreenResult(dev, it, capturing = dev in capturing) }
     }
@@ -87,6 +112,7 @@ private fun LocationResult(loc: PhoneLocation, name: String, now: Long) {
         loc.battery?.let { add("battery $it%" + if (loc.charging) " (charging)" else "") }
     }
     loc.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    loc.address?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
     if (parts.isNotEmpty()) Text(parts.joinToString(" · ").replaceFirstChar { it.uppercase() },
         style = MaterialTheme.typography.bodyMedium)
     if (loc.lat != null && loc.lng != null) {

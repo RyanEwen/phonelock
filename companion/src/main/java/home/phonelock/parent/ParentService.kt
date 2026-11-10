@@ -24,7 +24,11 @@ class ParentService : Service() {
 
     companion object {
         fun start(c: Context) {
-            if (Hub.devices.value.isEmpty()) return
+            // No permanent notification when every phone is reached by push.
+            if (Hub.devices.value.none { !Push.covers(it) }) {
+                stop(c)
+                return
+            }
             runCatching { c.startForegroundService(Intent(c, ParentService::class.java).setAction("restart")) }
                 .onFailure { Log.w(TAG, "start: $it") }
         }
@@ -46,7 +50,8 @@ class ParentService : Service() {
         // (Re)subscribe with the current device list.
         val gen = ++generation
         synchronized(conns) { conns.forEach { it.disconnect() }; conns.clear() }
-        Hub.devices.value.groupBy { it.server }.forEach { (server, devs) ->
+        // Phones on the hub arrive by push (PushService); only the rest need this connection.
+        Hub.devices.value.filterNot(Push::covers).groupBy { it.server }.forEach { (server, devs) ->
             val topics = devs.joinToString(",") { it.topic }
             thread(name = "ntfy") { loop(gen, server, topics) }
         }

@@ -21,7 +21,8 @@ object Setup {
      */
     private const val LOCK_SIGNATURE_SHA256 = "iuGxH0rozJJdlt18LabbsCPhxD3R5WTsIs3a7hG5QyM"
     private const val ADMIN_COMPONENT = "home.phonelock/home.phonelock.AdminReceiver"
-    private const val DEFAULT_SERVER = "https://ntfy.sh"
+    /** New phones use the PhoneLock hub when this build has one, else ntfy.sh. */
+    private val DEFAULT_SERVER get() = Push.hub.ifEmpty { "https://ntfy.sh" }
 
     private val rng = SecureRandom()
     private val b64 = Base64.getUrlEncoder().withoutPadding()

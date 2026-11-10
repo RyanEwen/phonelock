@@ -35,6 +35,16 @@ data class PhoneState(
     val labels: Map<String, String> = emptyMap(),
     val parentMode: Boolean = false,
     val ringing: Boolean = false,
+    /** Apps a parent took off the "Give access" list; shown so they can be put back. */
+    val notOffered: List<String> = emptyList(),
+    /** Current situation ("normal", "limited", "bedtime") and when it ends (0 = no schedule). */
+    val mode: String = "normal",
+    val modeUntil: Long = 0,
+    /** Situations each scheduled app is allowed in (bits: 1 normal, 2 limited hours, 4 bedtime). */
+    val masks: Map<String, Int> = emptyMap(),
+    val schedule: List<ScheduleRule> = emptyList(),
+    /** True once a full state (with app lists, table and schedule) has arrived; editing waits for it. */
+    val full: Boolean = false,
 ) {
     fun label(pkg: String) = labels[pkg] ?: pkg
 }
@@ -47,7 +57,10 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         Hub.init(this)
+        AppIconCache.init(this)
         PhoneTools.init(this)
+        Push.init(this)
+        Push.sync(Hub.devices.value)
     }
 }
 
@@ -69,11 +82,27 @@ object Hub {
     val connected = MutableStateFlow(false)
 
     private val sentIds = ArrayDeque<String>()
-    private val seenIds = ArrayDeque<String>()
+    /** Seen message ids with their timestamps, persisted; kept for [MAX_AGE_MS]. */
+    private val seenIds = LinkedHashMap<String, Long>()
+    private const val MAX_AGE_MS = 12 * 3600_000L
+
+    /** Records [id]; false if it was already seen. */
+    private fun markSeen(id: String, ts: Long): Boolean = synchronized(seenIds) {
+        if (id.isEmpty() || seenIds.containsKey(id)) return false
+        val cutoff = System.currentTimeMillis() - MAX_AGE_MS
+        seenIds.entries.removeAll { it.value < cutoff }
+        seenIds[id] = ts
+        while (seenIds.size > 5000) seenIds.remove(seenIds.keys.first())
+        prefs.edit().putString("seen_ids", JSONObject(seenIds as Map<*, *>).toString()).apply()
+        true
+    }
 
     fun init(c: Context) {
         app = c.applicationContext
         _parentName.value = prefs.getString("parent_name", "") ?: ""
+        prefs.getString("seen_ids", null)?.let { j ->
+            runCatching { JSONObject(j).let { o -> o.keys().forEach { seenIds[it] = o.getLong(it) } } }
+        }
         prefs.getString("devices", null)?.let { s ->
             val a = JSONArray(s)
             _devices.value = (0 until a.length()).map { a.getJSONObject(it) }.map {
@@ -130,13 +159,16 @@ object Hub {
     }.getOrNull()
 
     fun setParentName(name: String) {
-        _parentName.value = name.trim()
-        prefs.edit().putString("parent_name", name.trim()).apply()
+        // "phone" is how the locked phone signs its own messages; it ignores commands from that name.
+        val n = name.trim().let { if (it.equals("phone", ignoreCase = true)) "Parent" else it }
+        _parentName.value = n
+        prefs.edit().putString("parent_name", n).apply()
     }
 
     fun addDevice(d: Device) {
         _devices.update { l -> l.filterNot { it.id == d.id } + d }
         saveDevices()
+        Push.sync(listOf(d))
         ParentService.restart(app)
     }
 
@@ -146,6 +178,7 @@ object Hub {
     }
 
     fun removeDevice(id: String) {
+        _devices.value.firstOrNull { it.id == id }?.let { Push.sync(emptyList(), removed = listOf(it)) }
         _devices.update { l -> l.filterNot { it.id == id } }
         _states.update { it - id }
         _events.update { it - id }
@@ -177,6 +210,15 @@ object Hub {
     }
 
     fun refreshAll() = _devices.value.forEach { refresh(it.id) }
+
+    /**
+     * Refreshes phones whose state is older than [maxAgeMs]. Used when the app comes to the front, so
+     * flipping in and out doesn't spend ntfy.sh's daily message allowance (250 per visitor).
+     */
+    fun refreshStale(maxAgeMs: Long = 2 * 60_000L) = _devices.value.forEach { d ->
+        val s = _states.value[d.id]
+        if (s == null || !s.full || System.currentTimeMillis() - s.updated > maxAgeMs) refresh(d.id)
+    }
     fun refresh(dev: String, full: Boolean = true) = send(dev, msg("status").put("full", full))
 
     fun grant(dev: String, app: String, minutes: Long, req: String? = null) {
@@ -192,6 +234,16 @@ object Hub {
     }
 
     fun home(dev: String, op: String, app: String) = send(dev, msg("home").put("op", op).put("app", app))
+
+    /** Sets the situations [app] is allowed in ([ScheduleRule] bits); 0 leaves it to temporary grants. */
+    fun appMode(dev: String, app: String, mask: Int) = send(dev, msg("appmode").put("app", app).put("mask", mask))
+
+    /** Replaces the phone's weekly schedule. */
+    fun setSchedule(dev: String, rules: List<ScheduleRule>) =
+        send(dev, msg("schedule").put("rules", ScheduleRule.toJson(rules)))
+
+    /** Puts [app] on ([on]) or takes it off the phone's "Give access" list and the child's Ask picker. */
+    fun offer(dev: String, app: String, on: Boolean) = send(dev, msg("offer").put("app", app).put("on", on))
 
     /** Seals [o] with [dev]'s key and posts it to the phone's topic, logging failures to its activity. */
     internal fun send(dev: String, o: JSONObject) {
@@ -221,28 +273,45 @@ object Hub {
         val d = _devices.value.firstOrNull { it.topic == topic } ?: return
         val json = Crypto.open(Crypto.key(d.secret), body) ?: return
         val m = runCatching { JSONObject(json) }.getOrNull() ?: return
+        dispatch(d, m, attachmentUrl)
+    }
+
+    /** Handles one decrypted message from or about [d]; drops echoes of our own and duplicates. */
+    private fun dispatch(d: Device, m: JSONObject, attachmentUrl: String?) {
         val id = m.optString("id")
         synchronized(sentIds) { if (id in sentIds) return }
-        synchronized(seenIds) {
-            if (id in seenIds) return
-            seenIds.addLast(id); while (seenIds.size > 500) seenIds.removeFirst()
-        }
         val from = m.optString("from")
         val ts = m.optLong("ts")
+        // ntfy keeps messages 12 h and anyone who knows the topic can re-post captured ones: drop old ones,
+        // and remember ids across restarts so a replay isn't treated as new (e.g. an old request).
+        if (ts <= 0 || System.currentTimeMillis() - ts > MAX_AGE_MS) return
+        if (!markSeen(id, ts)) return
         val dev = d.id
         when (m.optString("t")) {
             "state" -> if (from == "phone") {
                 val s = parseState(m)
                 val old = _states.value[dev]
-                val merged = if (m.has("others") || old == null) s
-                    else s.copy(others = old.others, labels = old.labels + s.labels)
+                // States can arrive out of order (a full one travels as a slower attachment): keep the newest.
+                if (old != null && s.updated < old.updated) return
+                val merged = if (s.full || old == null) s
+                    else s.copy(others = old.others, notOffered = old.notOffered, labels = old.labels + s.labels,
+                        masks = old.masks, schedule = old.schedule, full = old.full)
                 _states.update { it + (dev to merged) }
                 saveStates()
+                AppIconCache.ensure(d, merged.home + merged.others + merged.notOffered + merged.grants.keys)
             }
             "event" -> if (from == "phone") {
                 val text = m.optString("text")
                 addEvent(dev, text, ts)
-                if (!text.startsWith("${_parentName.value}:")) notify(dev, text, null)
+                // Who caused it decides whether it's worth a notification: your own actions and routine news
+                // (bedtime starting) only go in the activity list; the other parent's are silent.
+                val by = m.optString("by").takeIf { it.isNotEmpty() }
+                when {
+                    by != null && by == _parentName.value -> {}
+                    m.optBoolean("quiet") -> {}
+                    by != null -> notify(dev, text, null, channel = "others")
+                    else -> notify(dev, text, null)
+                }
             }
             "req" -> if (from == "phone") {
                 val r = Request(dev, m.getString("req"), m.getString("app"), m.optString("label"),
@@ -254,7 +323,14 @@ object Hub {
                     notify(dev, "Asks for ${r.label} for ${fmtMinutes(r.minutes)}", r)
                 }
             }
+            // A message too big for ntfy's 4 KB limit, carried as an encrypted attachment.
+            "big" -> if (from == "phone" && attachmentUrl != null) thread(name = "big") {
+                runCatching { Attachments.fetch(d, attachmentUrl, id) }.getOrNull()
+                    ?.let { runCatching { JSONObject(String(it)) }.getOrNull() }
+                    ?.let { dispatch(d, it, null) }
+            }
             "loc", "shot" -> if (from == "phone") PhoneTools.handle(d, m, attachmentUrl)
+            "icons" -> if (from == "phone") AppIconCache.handle(d, m, attachmentUrl)
             // Another parent answered a request.
             "grant", "deny" -> m.optString("req").takeIf { it.isNotEmpty() }?.let(::resolve)
         }
@@ -268,13 +344,20 @@ object Hub {
         fun arr(n: String) = m.optJSONArray(n)?.let { a -> (0 until a.length()).map { a.getString(it) } }
             ?: emptyList()
         return PhoneState(m.optLong("ts"), m.optString("name"), grants, arr("home"), arr("others"), labels,
-            m.optBoolean("parent"), m.optBoolean("ringing"))
+            m.optBoolean("parent"), m.optBoolean("ringing"), arr("notOffered"),
+            m.optString("mode", "normal"), m.optLong("modeUntil"),
+            m.optJSONObject("masks")?.let { o -> o.keys().asSequence().associateWith { o.getInt(it) } } ?: emptyMap(),
+            ScheduleRule.listFrom(m.optJSONArray("schedule")), m.has("others") || m.optBoolean("full"))
     }
 
     private fun stateJson(s: PhoneState) = JSONObject().put("ts", s.updated).put("name", s.name)
         .put("grants", JSONObject(s.grants as Map<*, *>)).put("home", JSONArray(s.home))
         .put("others", JSONArray(s.others)).put("labels", JSONObject(s.labels as Map<*, *>))
         .put("parent", s.parentMode).put("ringing", s.ringing)
+        .put("notOffered", JSONArray(s.notOffered))
+        .put("mode", s.mode).put("modeUntil", s.modeUntil)
+        .put("masks", JSONObject(s.masks as Map<*, *>)).put("schedule", ScheduleRule.toJson(s.schedule))
+        .put("full", s.full)
 
     private fun saveStates() {
         val o = JSONObject()
@@ -318,14 +401,16 @@ object Hub {
         val nm = c.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("requests", "Requests", NotificationManager.IMPORTANCE_HIGH))
         nm.createNotificationChannel(NotificationChannel("events", "Phone activity", NotificationManager.IMPORTANCE_DEFAULT))
+        nm.createNotificationChannel(NotificationChannel("others", "Other parent's actions", NotificationManager.IMPORTANCE_LOW))
         nm.createNotificationChannel(NotificationChannel("service", "Connection", NotificationManager.IMPORTANCE_MIN))
     }
 
-    private fun notify(dev: String, text: String, r: Request?) {
+    /** Posts [text] for [dev]; with a request [r] it gets answer buttons. [channel] overrides the default. */
+    private fun notify(dev: String, text: String, r: Request?, channel: String? = null) {
         channels(app)
         val open = PendingIntent.getActivity(app, dev.hashCode(),
             Intent(app, MainActivity::class.java).putExtra("device", dev), PendingIntent.FLAG_IMMUTABLE)
-        val b = Notification.Builder(app, if (r != null) "requests" else "events")
+        val b = Notification.Builder(app, channel ?: if (r != null) "requests" else "events")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentTitle(deviceName(dev))
             .setContentText(text)

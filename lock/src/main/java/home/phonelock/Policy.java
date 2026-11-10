@@ -24,22 +24,25 @@ import java.util.Set;
 /** All device-owner policy lives here. Everything is idempotent and safe to re-run. */
 public final class Policy {
     static final String TAG = "PhoneLock";
+    /** Sent to our own package after every {@link #apply}. */
+    static final String ACTION_CHANGED = "home.phonelock.POLICY_CHANGED";
 
-    /** Apps shown on the home screen. Order = display order. */
+    /**
+     * Home-screen apps until a parent changes them: calls, contacts, calendar, camera, clock and calculator.
+     * Several package names cover stock Android, Pixel and LineageOS; only installed ones show.
+     */
     static final String[] DEFAULT_APPS = {
+            "com.google.android.dialer",
             "com.android.dialer",
             "com.google.android.contacts",
+            "com.android.contacts",
             "com.google.android.calendar",
             "com.google.android.GoogleCamera",
-            "app.alextran.immich",
-            "com.clue.android",
-            "com.havabee.breathe",
-            "com.nintendo.znba",
-            "org.lineageos.twelve",
-            "com.rbc.ventures.mydoh",
-            "org.lineageos.recorder",
+            "org.lineageos.aperture",
             "com.google.android.deskclock",
+            "com.android.deskclock",
             "com.google.android.calculator",
+            "com.android.calculator2",
     };
 
     /** Allowed to run inside the lock, but not shown on the home screen. */
@@ -150,9 +153,9 @@ public final class Policy {
         return out;
     }
 
-    /** Home screen apps plus anything temporarily allowed. */
+    /** Apps usable right now: scheduled apps allowed in the current situation, plus temporary grants. */
     static List<String> homeApps(Context c) {
-        List<String> out = new ArrayList<>(visibleApps(c));
+        List<String> out = new ArrayList<>(Schedule.allowedNow(c));
         for (String p : Grants.load(c).keySet()) if (!out.contains(p)) out.add(p);
         return out;
     }
@@ -167,6 +170,20 @@ public final class Policy {
         } catch (PackageManager.NameNotFoundException e) {
             return false;
         }
+    }
+
+    /** Apps a parent took off the "Give access" list; the child can't ask for them either. */
+    static Set<String> notOffered(Context c) {
+        Set<String> out = new LinkedHashSet<>();
+        for (String p : prefs(c).getString("not_offered", "").split(",")) if (!p.trim().isEmpty()) out.add(p.trim());
+        return out;
+    }
+
+    /** Adds {@code pkg} to, or removes it from, {@link #notOffered}. */
+    static void setOffered(Context c, String pkg, boolean offered) {
+        Set<String> s = notOffered(c);
+        if (offered) s.remove(pkg); else s.add(pkg);
+        prefs(c).edit().putString("not_offered", String.join(",", s)).apply();
     }
 
     static Set<String> extraSupport(Context c) {
@@ -200,7 +217,8 @@ public final class Policy {
         // 2. Which packages may run inside the lock.
         Set<String> lockPkgs = new LinkedHashSet<>();
         lockPkgs.add(c.getPackageName());
-        lockPkgs.addAll(visibleApps(c));
+        // Only the scheduled apps allowed in the current situation (normal, limited hours, bedtime).
+        lockPkgs.addAll(Schedule.allowedNow(c));
         lockPkgs.addAll(Arrays.asList(SUPPORT));
         lockPkgs.addAll(extraSupport(c));
         java.util.Map<String, Long> grants = Grants.load(c);
@@ -245,14 +263,24 @@ public final class Policy {
         }
 
         // 4. Hide every launchable app that isn't allowed.
-        hideApps(c, dpm, a, lockPkgs);
+        // Scheduled apps stay installed-visible outside their hours: the lock task allowlist already stops
+        // them opening, and hiding would kill them nightly (dropping reminders, alarms and backups).
+        Set<String> keep = new LinkedHashSet<>(lockPkgs);
+        keep.addAll(Schedule.masks(c).keySet());
+        hideApps(c, dpm, a, keep);
 
         Log.i(TAG, "applied; parent=" + parent + " lockPkgs=" + lockPkgs);
+        // Let an open home screen redraw right away (new grant, schedule change) instead of on its next tick.
+        c.sendBroadcast(new Intent(ACTION_CHANGED).setPackage(c.getPackageName()));
     }
 
     private static void grantOwnPermissions(Context c, DevicePolicyManager dpm, ComponentName a) {
         for (String perm : OWN_PERMISSIONS) {
             try {
+                // Android shows "Your organization allows Home to access your location" on every grant,
+                // and apply() runs often, so only grant what isn't already granted.
+                if (dpm.getPermissionGrantState(a, c.getPackageName(), perm)
+                        == DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED) continue;
                 dpm.setPermissionGrantState(a, c.getPackageName(), perm,
                         DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED);
             } catch (Exception e) {
