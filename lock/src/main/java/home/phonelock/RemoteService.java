@@ -18,6 +18,8 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -96,7 +98,18 @@ public class RemoteService extends Service {
                 Set<String> gone = new TreeSet<>(last);
                 gone.removeAll(now);
                 Policy.apply(this);
-                if (!gone.isEmpty()) reply("time's up for " + gone + ". " + Grants.describe(this, Grants.load(this)));
+                if (!gone.isEmpty()) {
+                    List<String> names = new ArrayList<>();
+                    for (String p : gone) names.add(Remote.label(this, p));
+                    String txt = "Time's up: " + String.join(", ", names);
+                    if (Remote.paired(this)) {
+                        Remote.notifyKid(this, txt);
+                        Remote.event(this, txt);
+                        Remote.sendState(this, false);
+                    } else {
+                        replyPlain(this, txt + ". " + Grants.describe(this, Grants.load(this)));
+                    }
+                }
                 last = now;
             }
         }
@@ -140,23 +153,22 @@ public class RemoteService extends Service {
             Policy.prefs(this).edit().putString("ntfy_last_id", id).apply();
             String msg = o.optString("message", "").trim();
             if (msg.isEmpty() || msg.startsWith(REPLY_PREFIX)) return;
-            // Ignore commands older than 6 hours (phone was off a long time).
+            // Ignore anything older than 6 hours (phone was off a long time).
             long sent = o.optLong("time", 0) * 1000;
             if (sent > 0 && System.currentTimeMillis() - sent > 6 * 3600_000L) return;
-            String out = Grants.command(this, msg);
-            Log.i(Policy.TAG, "remote '" + msg + "' -> " + out);
-            if (out != null) reply(out);
+            Remote.handle(this, msg);
         } catch (Exception e) {
             Log.w(Policy.TAG, "bad ntfy line: " + e);
         }
     }
 
-    void reply(String text) {
-        String topic = topic(this);
+    /** Legacy plain-text reply (only used before pairing). */
+    static void replyPlain(Context ctx, String text) {
+        String topic = topic(ctx);
         if (topic.isEmpty()) return;
         new Thread(() -> {
             try {
-                HttpURLConnection c = (HttpURLConnection) new URL(server(this) + "/" + topic).openConnection();
+                HttpURLConnection c = (HttpURLConnection) new URL(server(ctx) + "/" + topic).openConnection();
                 c.setRequestMethod("POST");
                 c.setDoOutput(true);
                 c.setConnectTimeout(15_000);

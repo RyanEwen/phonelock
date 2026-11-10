@@ -150,8 +150,10 @@ public final class Policy {
     /** Installed for this user, hidden or not. */
     static boolean isPresent(Context c, String pkg) {
         try {
-            c.getPackageManager().getApplicationInfo(pkg, PackageManager.MATCH_UNINSTALLED_PACKAGES);
-            return true;
+            ApplicationInfo ai = c.getPackageManager()
+                    .getApplicationInfo(pkg, PackageManager.MATCH_UNINSTALLED_PACKAGES);
+            // Hidden apps are still "installed"; apps removed from this user (data kept) are not.
+            return (ai.flags & ApplicationInfo.FLAG_INSTALLED) != 0;
         } catch (PackageManager.NameNotFoundException e) {
             return false;
         }
@@ -220,6 +222,13 @@ public final class Policy {
                 Log.w(TAG, "restriction " + r + ": " + e);
             }
         }
+
+        // Let ourselves post notifications (grant/deny messages to the kid).
+        try {
+            dpm.setPermissionGrantState(a, c.getPackageName(),
+                    android.Manifest.permission.POST_NOTIFICATIONS,
+                    DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED);
+        } catch (Exception ignored) {}
 
         // 4. Hide every launchable app that isn't allowed.
         hideApps(c, dpm, a, lockPkgs);

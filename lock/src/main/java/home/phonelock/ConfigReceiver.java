@@ -110,6 +110,12 @@ public class ConfigReceiver extends BroadcastReceiver {
                 RemoteService.restart(c);
                 return "remote=" + server + "/" + topic;
             }
+            case "secret":
+                // 32-byte base64url pairing secret shared with the parent companion apps.
+                if (value != null && !value.isEmpty()) Crypto.key(value); // validates
+                Policy.prefs(c).edit().putString("secret", value == null ? "" : value).apply();
+                RemoteService.restart(c);
+                return "secret " + (value == null || value.isEmpty() ? "cleared" : "set");
             case "say":
                 // Run a remote-style command locally, e.g. --es value "allow whatsapp 5m"
                 return Grants.command(c, value == null ? "" : value);

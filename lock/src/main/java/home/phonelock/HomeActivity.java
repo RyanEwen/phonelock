@@ -140,7 +140,42 @@ public class HomeActivity extends Activity {
         gl.topMargin = dp(32);
         root.addView(grid, gl);
 
+        Button ask = button("Ask for an app", v -> askForApp());
+        ask.setTextColor(Color.WHITE);
+        ask.setBackgroundColor(Color.rgb(40, 46, 60));
+        root.addView(ask, new LinearLayout.LayoutParams(-1, -2));
+
         setContentView(root);
+    }
+
+    /** Kid picks an app and a duration; parents get a request on their companion apps. */
+    private void askForApp() {
+        if (!Remote.paired(this)) {
+            Toast.makeText(this, "Not set up yet", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        List<String> pkgs = Remote.otherApps(this);
+        if (pkgs.isEmpty()) {
+            Toast.makeText(this, "Nothing to ask for", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String[] labels = new String[pkgs.size()];
+        for (int i = 0; i < labels.length; i++) labels[i] = Remote.label(this, pkgs.get(i));
+        new AlertDialog.Builder(this)
+                .setTitle("Which app?")
+                .setItems(labels, (d, which) -> {
+                    String[] times = {"30 minutes", "1 hour", "2 hours", "4 hours"};
+                    long[] mins = {30, 60, 120, 240};
+                    new AlertDialog.Builder(this)
+                            .setTitle("For how long?")
+                            .setItems(times, (d2, w2) -> {
+                                boolean ok = Remote.request(this, pkgs.get(which), mins[w2]);
+                                Toast.makeText(this, ok ? "Asked. You'll get a notification."
+                                        : "Wait a minute before asking again", Toast.LENGTH_LONG).show();
+                            })
+                            .show();
+                })
+                .show();
     }
 
     @Override
