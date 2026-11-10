@@ -16,7 +16,7 @@ import javax.crypto.spec.SecretKeySpec;
  *   java tools/ParentCli.java send '{"t":"status","full":true}'
  *   java tools/ParentCli.java read 10m        # decrypt recent messages
  *   java tools/ParentCli.java newsecret       # print a fresh 32-byte secret
- * Reads secrets/pairing.properties (server, topic, secret).
+ * Reads secrets/devices/$DEVICE/pairing.properties (server, topic, secret).
  */
 public class ParentCli {
     static final byte[] AAD = "phonelock/1".getBytes(StandardCharsets.US_ASCII);
@@ -29,7 +29,9 @@ public class ParentCli {
             return;
         }
         var p = new java.util.Properties();
-        p.load(Files.newBufferedReader(Path.of("secrets/pairing.properties")));
+        // DEVICE=<slug> picks secrets/devices/<slug>/pairing.properties
+        String dev = System.getenv().getOrDefault("DEVICE", "kid");
+        p.load(Files.newBufferedReader(Path.of("secrets/devices/" + dev + "/pairing.properties")));
         String server = p.getProperty("server"), topic = p.getProperty("topic");
         byte[] key = Base64.getUrlDecoder().decode(p.getProperty("secret"));
         HttpClient http = HttpClient.newHttpClient();

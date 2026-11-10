@@ -14,19 +14,22 @@ import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.concurrent.thread
 
-/** Holds a streaming connection to the ntfy topic so requests and alerts arrive immediately. */
+/**
+ * Holds one streaming ntfy connection per server, subscribed to every paired phone's topic,
+ * so requests and alerts arrive immediately.
+ */
 class ParentService : Service() {
-    @Volatile private var running = false
-    @Volatile private var conn: HttpURLConnection? = null
+    @Volatile private var generation = 0
+    private val conns = mutableListOf<HttpURLConnection>()
 
     companion object {
         fun start(c: Context) {
-            if (Hub.config.value == null) return
-            runCatching { c.startForegroundService(Intent(c, ParentService::class.java)) }
+            if (Hub.devices.value.isEmpty()) return
+            runCatching { c.startForegroundService(Intent(c, ParentService::class.java).setAction("restart")) }
                 .onFailure { Log.w(TAG, "start: $it") }
         }
         fun stop(c: Context) { c.stopService(Intent(c, ParentService::class.java)) }
-        fun restart(c: Context) { stop(c); start(c) }
+        fun restart(c: Context) = start(c)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -35,53 +38,57 @@ class ParentService : Service() {
             PendingIntent.FLAG_IMMUTABLE)
         val n = Notification.Builder(this, "service")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
-            .setContentTitle("Listening for her phone")
+            .setContentTitle("Listening for paired phones")
             .setContentIntent(open)
             .setOngoing(true)
             .build()
         startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        if (!running) {
-            running = true
-            thread(name = "ntfy") { loop() }
+        // (Re)subscribe with the current device list.
+        val gen = ++generation
+        synchronized(conns) { conns.forEach { it.disconnect() }; conns.clear() }
+        Hub.devices.value.groupBy { it.server }.forEach { (server, devs) ->
+            val topics = devs.joinToString(",") { it.topic }
+            thread(name = "ntfy") { loop(gen, server, topics) }
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
-        running = false
-        conn?.disconnect()
+        generation++
+        synchronized(conns) { conns.forEach { it.disconnect() }; conns.clear() }
         Hub.connected.value = false
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun loop() {
+    private fun loop(gen: Int, server: String, topics: String) {
         var backoff = 2_000L
         var first = true
-        while (running) {
-            val c = Hub.config.value ?: return
+        while (gen == generation) {
             try {
-                val since = Hub.lastNtfyId ?: (System.currentTimeMillis() / 1000 - 3600).toString()
-                val h = URL("${c.server}/${c.topic}/json?since=$since").openConnection() as HttpURLConnection
-                conn = h
+                val last = Hub.lastNtfyTime
+                val since = if (last > 0) (last - 60).toString() else "1h"
+                val h = URL("$server/$topics/json?since=$since").openConnection() as HttpURLConnection
+                synchronized(conns) { conns.add(h) }
                 h.connectTimeout = 20_000
                 h.readTimeout = 120_000
                 h.inputStream.bufferedReader().use { r ->
                     Hub.connected.value = true
                     backoff = 2_000
-                    if (first) { Hub.refresh(true); first = false }
-                    while (running) {
+                    if (first) { Hub.refreshAll(); first = false }
+                    while (gen == generation) {
                         val line = r.readLine() ?: break
                         val o = runCatching { JSONObject(line) }.getOrNull() ?: continue
                         if (o.optString("event") != "message") continue
-                        Hub.lastNtfyId = o.optString("id")
-                        Hub.handle(o.optString("message"))
+                        Hub.lastNtfyTime = maxOf(Hub.lastNtfyTime, o.optLong("time"))
+                        Hub.handle(o.optString("topic"), o.optString("message"))
                     }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "ntfy: $e")
             }
+            if (gen != generation) return
             Hub.connected.value = false
             Thread.sleep(backoff)
             backoff = (backoff * 2).coerceAtMost(120_000)

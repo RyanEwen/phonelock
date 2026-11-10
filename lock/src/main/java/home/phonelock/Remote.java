@@ -191,6 +191,7 @@ public final class Remote {
                 home.put(p);
                 labels.put(p, label(c, p));
             }
+            o.put("name", Policy.prefs(c).getString("device_name", "Phone"));
             o.put("grants", grants);
             o.put("home", home);
             o.put("parent", Policy.inParentMode(c));

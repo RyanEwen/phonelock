@@ -110,6 +110,11 @@ public class ConfigReceiver extends BroadcastReceiver {
                 RemoteService.restart(c);
                 return "remote=" + server + "/" + topic;
             }
+            case "name":
+                // Display name the parent apps show for this phone.
+                Policy.prefs(c).edit().putString("device_name", value == null ? "Phone" : value).apply();
+                Remote.sendState(c, false);
+                return "name=" + value;
             case "secret":
                 // 32-byte base64url pairing secret shared with the parent companion apps.
                 if (value != null && !value.isEmpty()) Crypto.key(value); // validates

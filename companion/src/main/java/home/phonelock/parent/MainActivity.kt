@@ -3,25 +3,26 @@ package home.phonelock.parent
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.text.format.DateFormat
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -36,7 +37,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
@@ -57,86 +57,129 @@ import java.util.Date
 
 class MainActivity : ComponentActivity() {
     private val pendingLink = mutableStateOf<String?>(null)
+    private val selected = mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        pendingLink.value = intent?.dataString
-        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+        readIntent(intent)
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         ParentService.start(this)
         setContent {
             val ctx = LocalContext.current
-            val dark = isSystemInDarkTheme()
-            MaterialTheme(colorScheme = if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)) {
+            MaterialTheme(colorScheme = if (isSystemInDarkTheme()) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)) {
                 Surface(Modifier.fillMaxSize()) {
-                    val cfg by Hub.config.collectAsState()
+                    val devices by Hub.devices.collectAsState()
+                    var adding by remember { mutableStateOf(false) }
                     val link by pendingLink
-                    if (cfg == null || link != null) {
-                        PairScreen(link) { pendingLink.value = null }
+                    if (devices.isEmpty() || adding || link != null) {
+                        AddPhoneScreen(link, canCancel = devices.isNotEmpty()) { added ->
+                            pendingLink.value = null
+                            adding = false
+                            if (added != null) selected.value = added
+                        }
                     } else {
-                        MainScreen()
+                        val sel = selected.value?.takeIf { s -> devices.any { it.id == s } } ?: devices.first().id
+                        MainScreen(devices, sel, onSelect = { selected.value = it }, onAdd = { adding = true })
                     }
                 }
             }
         }
     }
 
+    private fun readIntent(i: Intent?) {
+        i?.dataString?.let { pendingLink.value = it }
+        i?.getStringExtra("device")?.let { selected.value = it }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        intent.dataString?.let { pendingLink.value = it }
+        readIntent(intent)
     }
 
     override fun onResume() {
         super.onResume()
-        if (Hub.config.value != null) Hub.refresh(true)
+        Hub.refreshAll()
     }
 }
 
 @Composable
-private fun PairScreen(initialLink: String?, done: () -> Unit) {
+private fun AddPhoneScreen(initialLink: String?, canCancel: Boolean, done: (String?) -> Unit) {
     var link by remember { mutableStateOf(initialLink ?: "") }
-    var name by remember { mutableStateOf("") }
+    var scanning by remember { mutableStateOf(false) }
+    val parentName by Hub.parentName.collectAsState()
+    var you by remember { mutableStateOf(parentName) }
     val parsed = Hub.parsePairing(link)
+    var phoneName by remember(parsed?.topic) { mutableStateOf(parsed?.name ?: "") }
+
+    if (scanning) {
+        BackHandler { scanning = false }
+        QrScanner(onResult = { link = it; scanning = false }, onCancel = { scanning = false })
+        return
+    }
+    if (canCancel) BackHandler { done(null) }
     Column(Modifier.safeDrawingPadding().padding(20.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Pair with her phone", style = MaterialTheme.typography.headlineSmall)
-        Text("Scan the pairing QR code with your camera, or paste the pairing link here.")
+        Text("Add a phone", style = MaterialTheme.typography.headlineSmall)
+        Text("Scan the pairing QR code for the phone you want to manage, or paste its pairing link.")
+        Button(onClick = { scanning = true }) { Text("Scan QR code") }
         OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth(), label = { Text("Pairing link") },
-            isError = link.isNotBlank() && parsed == null)
-        OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Your name (e.g. Dad)") },
-            singleLine = true)
-        Button(onClick = {
-            parsed?.let { (s, t, k) -> Hub.pair(s, t, k, name); done() }
-        }, enabled = parsed != null && name.isNotBlank()) { Text("Pair") }
-        if (Hub.config.value != null) TextButton(onClick = done) { Text("Cancel") }
+            isError = link.isNotBlank() && parsed == null,
+            supportingText = { if (parsed != null) Text("Pairing code recognised") })
+        if (parsed != null) OutlinedTextField(phoneName, { phoneName = it }, Modifier.fillMaxWidth(),
+            label = { Text("Phone name") }, singleLine = true)
+        OutlinedTextField(you, { you = it }, Modifier.fillMaxWidth(),
+            label = { Text("Your name, shown on their notifications") }, singleLine = true)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = {
+                parsed?.let {
+                    Hub.setParentName(you)
+                    Hub.addDevice(it.copy(name = phoneName.ifBlank { it.name }))
+                    done(it.id)
+                }
+            }, enabled = parsed != null && you.isNotBlank()) { Text("Add phone") }
+            if (canCancel) TextButton(onClick = { done(null) }) { Text("Cancel") }
+        }
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun MainScreen() {
-    val ctx = LocalContext.current
-    val state by Hub.state.collectAsState()
-    val requests by Hub.requests.collectAsState()
-    val events by Hub.events.collectAsState()
+private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) -> Unit, onAdd: () -> Unit) {
+    val states by Hub.states.collectAsState()
+    val allRequests by Hub.requests.collectAsState()
+    val allEvents by Hub.events.collectAsState()
     val connected by Hub.connected.collectAsState()
+    val state = states[dev] ?: PhoneState()
+    val requests = allRequests.filter { it.device == dev }
+    val events = allEvents[dev] ?: emptyList()
+    val name = Hub.deviceName(dev)
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { delay(15_000); now = System.currentTimeMillis() } }
     var menu by remember { mutableStateOf(false) }
 
     Column(Modifier.safeDrawingPadding().padding(16.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            devices.forEach { d ->
+                val pending = allRequests.count { it.device == d.id }
+                FilterChip(selected = d.id == dev, onClick = { onSelect(d.id) },
+                    label = { Text(Hub.deviceName(d.id) + if (pending > 0) "  •$pending" else "") })
+            }
+            TextButton(onClick = onAdd) { Text("+ Add phone") }
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("Her phone", style = MaterialTheme.typography.headlineSmall)
+                Text(name, style = MaterialTheme.typography.headlineSmall)
                 Text(
                     (if (connected) "Connected" else "Connecting…") +
-                        (if (state.updated > 0) " · updated ${ago(now - state.updated)}" else "") +
+                        (if (state.updated > 0) " · updated ${ago(now - state.updated)}" else " · no reply yet") +
                         (if (state.parentMode) " · parent mode on" else ""),
                     style = MaterialTheme.typography.bodySmall)
             }
-            TextButton(onClick = { Hub.refresh(true) }) { Text("Refresh") }
+            TextButton(onClick = { Hub.refresh(dev) }) { Text("Refresh") }
             TextButton(onClick = { menu = true }) { Text("⋮") }
         }
         BatteryHint()
@@ -145,8 +188,8 @@ private fun MainScreen() {
             requests.forEach { r ->
                 Text("${r.label} for ${fmtMinutes(r.minutes)} · ${time(r.ts)}", fontWeight = FontWeight.Medium)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { Hub.grant(r.app, r.minutes, r.req) }) { Text("Allow ${fmtMinutes(r.minutes)}") }
-                    if (r.minutes != 30L) OutlinedButton(onClick = { Hub.grant(r.app, 30, r.req) }) { Text("30 min") }
+                    Button(onClick = { Hub.grant(dev, r.app, r.minutes, r.req) }) { Text("Allow ${fmtMinutes(r.minutes)}") }
+                    if (r.minutes != 30L) OutlinedButton(onClick = { Hub.grant(dev, r.app, 30, r.req) }) { Text("30 min") }
                     OutlinedButton(onClick = { Hub.deny(r) }) { Text("Deny") }
                 }
             }
@@ -154,7 +197,7 @@ private fun MainScreen() {
 
         Section("Allowed right now") {
             val live = state.grants.filterValues { it > now }
-            if (live.isEmpty()) Text("Only her normal apps.", style = MaterialTheme.typography.bodyMedium)
+            if (live.isEmpty()) Text("Only the usual home-screen apps.", style = MaterialTheme.typography.bodyMedium)
             live.forEach { (pkg, until) ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -163,18 +206,18 @@ private fun MainScreen() {
                             style = MaterialTheme.typography.bodySmall)
                     }
                     TextButton(onClick = {
-                        Hub.grant(pkg, (until - System.currentTimeMillis()) / 60_000 + 30)
+                        Hub.grant(dev, pkg, (until - System.currentTimeMillis()) / 60_000 + 30)
                     }) { Text("+30 min") }
-                    TextButton(onClick = { Hub.revoke(pkg) }) { Text("Stop") }
+                    TextButton(onClick = { Hub.revoke(dev, pkg) }) { Text("Stop") }
                 }
             }
-            if (live.size > 1) OutlinedButton(onClick = { Hub.revoke("all") }) { Text("Stop all") }
+            if (live.size > 1) OutlinedButton(onClick = { Hub.revoke(dev, "all") }) { Text("Stop all") }
         }
 
         Section("Give access") {
-            var pick by remember { mutableStateOf<String?>(null) }
+            var pick by remember(dev) { mutableStateOf<String?>(null) }
             var mins by remember { mutableLongStateOf(60L) }
-            if (state.others.isEmpty()) Text("Tap Refresh to load her apps.", style = MaterialTheme.typography.bodySmall)
+            if (state.others.isEmpty()) Text("Tap Refresh to load the phone's apps.", style = MaterialTheme.typography.bodySmall)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 state.others.sortedBy { state.label(it).lowercase() }.forEach { p ->
                     FilterChip(selected = pick == p, onClick = { pick = p }, label = { Text(state.label(p)) })
@@ -185,13 +228,13 @@ private fun MainScreen() {
                     FilterChip(selected = mins == m, onClick = { mins = m }, label = { Text(fmtMinutes(m)) })
                 }
             }
-            Button(onClick = { pick?.let { Hub.grant(it, mins); pick = null } }, enabled = pick != null) {
+            Button(onClick = { pick?.let { Hub.grant(dev, it, mins); pick = null } }, enabled = pick != null) {
                 Text(pick?.let { "Allow ${state.label(it)} for ${fmtMinutes(mins)}" } ?: "Pick an app")
             }
         }
 
         Section("Home screen apps") {
-            var adding by remember { mutableStateOf(false) }
+            var adding by remember(dev) { mutableStateOf(false) }
             state.home.forEach { p ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(state.label(p), Modifier.weight(1f))
@@ -200,15 +243,15 @@ private fun MainScreen() {
                     if (confirm) AlertDialog(
                         onDismissRequest = { confirm = false },
                         title = { Text("Remove ${state.label(p)}?") },
-                        text = { Text("It will disappear from her home screen and be hidden.") },
-                        confirmButton = { TextButton(onClick = { Hub.home("remove", p); confirm = false }) { Text("Remove") } },
+                        text = { Text("It will disappear from the home screen and be hidden.") },
+                        confirmButton = { TextButton(onClick = { Hub.home(dev, "remove", p); confirm = false }) { Text("Remove") } },
                         dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } })
                 }
             }
             OutlinedButton(onClick = { adding = !adding }) { Text(if (adding) "Done" else "Add an app…") }
             if (adding) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 state.others.sortedBy { state.label(it).lowercase() }.forEach { p ->
-                    OutlinedButton(onClick = { Hub.home("add", p); adding = false }) { Text("+ ${state.label(p)}") }
+                    OutlinedButton(onClick = { Hub.home(dev, "add", p); adding = false }) { Text("+ ${state.label(p)}") }
                 }
             }
         }
@@ -218,16 +261,40 @@ private fun MainScreen() {
                 Text("${time(e.ts)}  ${e.text}", style = MaterialTheme.typography.bodySmall)
             }
         }
-        Spacer(Modifier.width(1.dp))
     }
 
-    if (menu) AlertDialog(
-        onDismissRequest = { menu = false },
+    if (menu) PhoneMenu(dev, name) { menu = false }
+}
+
+@Composable
+private fun PhoneMenu(dev: String, name: String, close: () -> Unit) {
+    var rename by remember { mutableStateOf(name) }
+    var you by remember { mutableStateOf(Hub.parentName.value) }
+    var confirmRemove by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = close,
         title = { Text("Settings") },
-        text = { Text("Paired as ${Hub.config.value?.name}. Unpairing removes the secret from this phone; " +
-                "you'll need the pairing QR code to pair again.") },
-        confirmButton = { TextButton(onClick = { Hub.unpair(); menu = false }) { Text("Unpair") } },
-        dismissButton = { TextButton(onClick = { menu = false }) { Text("Close") } })
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(rename, { rename = it }, label = { Text("Phone name") }, singleLine = true)
+                OutlinedTextField(you, { you = it }, label = { Text("Your name") }, singleLine = true)
+                TextButton(onClick = { confirmRemove = true }) { Text("Remove this phone…") }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (rename.isNotBlank()) Hub.renameDevice(dev, rename)
+                if (you.isNotBlank()) Hub.setParentName(you)
+                close()
+            }) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = close) { Text("Close") } })
+    if (confirmRemove) AlertDialog(
+        onDismissRequest = { confirmRemove = false },
+        title = { Text("Remove $name?") },
+        text = { Text("This app stops managing it. The phone stays locked; you'll need its pairing QR code to add it again.") },
+        confirmButton = { TextButton(onClick = { Hub.removeDevice(dev); confirmRemove = false; close() }) { Text("Remove") } },
+        dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("Cancel") } })
 }
 
 @SuppressLint("BatteryLife")
