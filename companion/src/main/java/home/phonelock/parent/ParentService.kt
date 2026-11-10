@@ -82,7 +82,8 @@ class ParentService : Service() {
                         val o = runCatching { JSONObject(line) }.getOrNull() ?: continue
                         if (o.optString("event") != "message") continue
                         Hub.lastNtfyTime = maxOf(Hub.lastNtfyTime, o.optLong("time"))
-                        Hub.handle(o.optString("topic"), o.optString("message"))
+                        val attachment = o.optJSONObject("attachment")?.optString("url")?.takeIf { it.isNotEmpty() }
+                        Hub.handle(o.optString("topic"), o.optString("message"), attachment)
                     }
                 }
             } catch (e: Exception) {

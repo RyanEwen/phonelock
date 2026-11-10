@@ -34,6 +34,7 @@ data class PhoneState(
     val others: List<String> = emptyList(),
     val labels: Map<String, String> = emptyMap(),
     val parentMode: Boolean = false,
+    val ringing: Boolean = false,
 ) {
     fun label(pkg: String) = labels[pkg] ?: pkg
 }
@@ -46,6 +47,7 @@ class App : Application() {
     override fun onCreate() {
         super.onCreate()
         Hub.init(this)
+        PhoneTools.init(this)
     }
 }
 
@@ -166,7 +168,8 @@ object Hub {
 
     // ---------- outgoing ----------
 
-    private fun msg(type: String): JSONObject {
+    /** A new outgoing message of [type] with the common fields; its id is remembered so echoes are dropped. */
+    internal fun msg(type: String): JSONObject {
         val id = Crypto.randomId()
         synchronized(sentIds) { sentIds.addLast(id); while (sentIds.size > 200) sentIds.removeFirst() }
         return JSONObject().put("v", 1).put("t", type).put("id", id)
@@ -190,7 +193,8 @@ object Hub {
 
     fun home(dev: String, op: String, app: String) = send(dev, msg("home").put("op", op).put("app", app))
 
-    private fun send(dev: String, o: JSONObject) {
+    /** Seals [o] with [dev]'s key and posts it to the phone's topic, logging failures to its activity. */
+    internal fun send(dev: String, o: JSONObject) {
         val d = _devices.value.firstOrNull { it.id == dev } ?: return
         thread {
             try {
@@ -212,8 +216,8 @@ object Hub {
 
     // ---------- incoming ----------
 
-    /** One ntfy message for [topic]. */
-    fun handle(topic: String, body: String) {
+    /** One ntfy message for [topic]. [attachmentUrl] is the ntfy attachment's URL, if it carried one. */
+    fun handle(topic: String, body: String, attachmentUrl: String? = null) {
         val d = _devices.value.firstOrNull { it.topic == topic } ?: return
         val json = Crypto.open(Crypto.key(d.secret), body) ?: return
         val m = runCatching { JSONObject(json) }.getOrNull() ?: return
@@ -250,6 +254,7 @@ object Hub {
                     notify(dev, "Asks for ${r.label} for ${fmtMinutes(r.minutes)}", r)
                 }
             }
+            "loc", "shot" -> if (from == "phone") PhoneTools.handle(d, m, attachmentUrl)
             // Another parent answered a request.
             "grant", "deny" -> m.optString("req").takeIf { it.isNotEmpty() }?.let(::resolve)
         }
@@ -263,13 +268,13 @@ object Hub {
         fun arr(n: String) = m.optJSONArray(n)?.let { a -> (0 until a.length()).map { a.getString(it) } }
             ?: emptyList()
         return PhoneState(m.optLong("ts"), m.optString("name"), grants, arr("home"), arr("others"), labels,
-            m.optBoolean("parent"))
+            m.optBoolean("parent"), m.optBoolean("ringing"))
     }
 
     private fun stateJson(s: PhoneState) = JSONObject().put("ts", s.updated).put("name", s.name)
         .put("grants", JSONObject(s.grants as Map<*, *>)).put("home", JSONArray(s.home))
         .put("others", JSONArray(s.others)).put("labels", JSONObject(s.labels as Map<*, *>))
-        .put("parent", s.parentMode)
+        .put("parent", s.parentMode).put("ringing", s.ringing)
 
     private fun saveStates() {
         val o = JSONObject()
@@ -334,7 +339,8 @@ object Hub {
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)).build()
             val base = r.req.hashCode()
             b.addAction(action("Allow ${fmtMinutes(r.minutes)}", "allow", r.minutes, base))
-            if (r.minutes != 30L) b.addAction(action("30 min", "allow", 30, base + 1))
+            // Android shows at most 3 actions, so other lengths are picked in the app.
+            b.addAction(Notification.Action.Builder(null, "Choose time…", open).build())
             b.addAction(action("Deny", "deny", 0, base + 2))
         }
         val nid = r?.req?.hashCode() ?: (System.currentTimeMillis() and 0x7fffffff).toInt()
@@ -352,6 +358,9 @@ object Hub {
         if (kind == "allow") grant(r.device, r.app, minutes, r.req) else deny(r)
     }
 }
+
+/** Grant lengths offered to parents, in minutes. */
+val GRANT_DURATIONS = listOf(15L, 30L, 60L, 120L, 240L, 480L)
 
 fun fmtMinutes(m: Long): String = when {
     m % 60 == 0L -> "${m / 60} h"

@@ -37,6 +37,24 @@ public final class Crypto {
         return Base64.encodeToString(out, Base64.URL_SAFE | Base64.NO_WRAP | Base64.NO_PADDING);
     }
 
+    /**
+     * Encrypts a binary blob (a screenshot) for an ntfy attachment: raw iv[12] || ciphertext+tag, no base64.
+     * {@code aad} binds the blob to the sealed message that announces it, so a blob can't be swapped
+     * for another one under the same key.
+     */
+    static byte[] sealBytes(byte[] key, byte[] data, String aad) throws Exception {
+        byte[] iv = new byte[12];
+        RNG.nextBytes(iv);
+        Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+        c.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, iv));
+        c.updateAAD(aad.getBytes(StandardCharsets.US_ASCII));
+        byte[] ct = c.doFinal(data);
+        byte[] out = new byte[iv.length + ct.length];
+        System.arraycopy(iv, 0, out, 0, iv.length);
+        System.arraycopy(ct, 0, out, iv.length, ct.length);
+        return out;
+    }
+
     /** Returns null if the message wasn't sealed with this key. */
     static String open(byte[] key, String sealed) {
         try {

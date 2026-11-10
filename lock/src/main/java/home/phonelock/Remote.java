@@ -132,9 +132,34 @@ public final class Remote {
                 sendState(c, true);
                 break;
             }
+            case "locate":
+                Locator.locate(c, m.optString("id"));
+                break;
+            case "ring":
+                ring(c, m, who);
+                break;
+            case "screen":
+                // "notify" false: the parent chose not to tell the kid (the parents' log still records it).
+                ScreenService.capture(c, m.optString("id"), who, m.optBoolean("notify", true));
+                break;
             default:
                 break;
         }
+    }
+
+    /** {@code ring} with {@code op} start (default) or stop. Runs on the main thread, as Ringer requires. */
+    private static void ring(Context c, JSONObject m, String who) {
+        boolean stop = "stop".equals(m.optString("op"));
+        int seconds = m.optInt("seconds", Ringer.DEFAULT_SECONDS);
+        c.getMainExecutor().execute(() -> {
+            if (stop) {
+                Ringer.stop(c, who + " stopped the ringing");
+            } else {
+                boolean was = Ringer.isRinging();
+                Ringer.start(c, who, seconds);
+                if (!was) event(c, who + " is ringing the phone");
+            }
+        });
     }
 
     // ---------- outgoing ----------
@@ -195,6 +220,7 @@ public final class Remote {
             o.put("grants", grants);
             o.put("home", home);
             o.put("parent", Policy.inParentMode(c));
+            o.put("ringing", Ringer.isRinging());
             if (full) {
                 JSONArray inst = new JSONArray();
                 for (String p : otherApps(c)) {
@@ -245,24 +271,63 @@ public final class Remote {
         new Thread(() -> {
             try {
                 String body = Crypto.seal(Crypto.key(secret(c)), o.toString());
-                HttpURLConnection h = (HttpURLConnection) new URL(
-                        RemoteService.server(c) + "/" + RemoteService.topic(c)).openConnection();
-                h.setRequestMethod("POST");
-                h.setDoOutput(true);
-                h.setConnectTimeout(15_000);
-                h.setReadTimeout(15_000);
-                try (OutputStream os = h.getOutputStream()) {
-                    os.write(body.getBytes(StandardCharsets.US_ASCII));
-                }
-                h.getResponseCode();
-                h.disconnect();
+                post(c, body.getBytes(StandardCharsets.US_ASCII), null);
             } catch (Exception e) {
                 Log.w(Policy.TAG, "publish: " + e);
             }
         }).start();
     }
 
+    /**
+     * Publishes {@code o} with an encrypted binary attachment (a screenshot). ntfy stores the blob as a
+     * file (kept ~3 h on ntfy.sh) and delivers the sealed message as the text of the same ntfy message.
+     * The blob's AAD is {@code phonelock/blob/<message id>}, binding it to this message.
+     */
+    static void publishWithBlob(Context c, JSONObject o, byte[] blob) {
+        if (!paired(c)) return;
+        new Thread(() -> {
+            try {
+                byte[] key = Crypto.key(secret(c));
+                String sealed = Crypto.seal(key, o.toString());
+                byte[] enc = Crypto.sealBytes(key, blob, "phonelock/blob/" + o.getString("id"));
+                post(c, enc, sealed);
+            } catch (Exception e) {
+                Log.w(Policy.TAG, "publish blob: " + e);
+            }
+        }).start();
+    }
+
+    /**
+     * Sends one ntfy message. With {@code messageHeader} null, {@code body} is the message; otherwise
+     * {@code body} is uploaded as an attachment and {@code messageHeader} becomes the message text.
+     * Blocks; call off the main thread.
+     */
+    private static void post(Context c, byte[] body, String messageHeader) throws Exception {
+        HttpURLConnection h = (HttpURLConnection) new URL(
+                RemoteService.server(c) + "/" + RemoteService.topic(c)).openConnection();
+        h.setRequestMethod(messageHeader == null ? "POST" : "PUT");
+        h.setDoOutput(true);
+        h.setConnectTimeout(15_000);
+        h.setReadTimeout(30_000);
+        if (messageHeader != null) {
+            h.setRequestProperty("Filename", "blob.bin");
+            h.setRequestProperty("Message", messageHeader);
+            h.setFixedLengthStreamingMode(body.length);
+        }
+        try (OutputStream os = h.getOutputStream()) {
+            os.write(body);
+        }
+        int code = h.getResponseCode();
+        h.disconnect();
+        if (code < 200 || code > 299) Log.w(Policy.TAG, "ntfy publish HTTP " + code);
+    }
+
     static void notifyKid(Context c, String text) {
+        notifyKid(c, text, (int) (System.currentTimeMillis() & 0x7fffffff));
+    }
+
+    /** Posts a notice to the child under notification {@code id} (reusing an id replaces that notice). */
+    static void notifyKid(Context c, String text, int id) {
         NotificationManager nm = c.getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel("parent", "From parents",
                 NotificationManager.IMPORTANCE_DEFAULT));
@@ -271,6 +336,6 @@ public final class Remote {
                 .setContentTitle(text)
                 .setAutoCancel(true)
                 .build();
-        nm.notify((int) (System.currentTimeMillis() & 0x7fffffff), n);
+        nm.notify(id, n);
     }
 }

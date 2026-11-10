@@ -1,5 +1,5 @@
 #!/bin/bash
-# Push a device's topic, secret and name to its locked phone over adb.
+# Push a device's topic, secret and name to its locked phone over adb, and switch on screen view and ring.
 #   tools/configure-lock.sh <slug> [adb-serial]
 # Uses WSL adb; set ADB=/path/to/adb(.exe) to use another (e.g. Windows adb for USB).
 set -e
@@ -12,3 +12,7 @@ cfg() { $A $S shell "am broadcast -n home.phonelock/.ConfigReceiver -a home.phon
 cfg remote "$(get server)|$(get topic)"
 cfg secret "$(get secret)"
 cfg name "$(get name)"
+# Screen view: enable the screenshot accessibility service (the device owner allows only this one).
+$A $S shell "settings put secure enabled_accessibility_services home.phonelock/home.phonelock.ScreenService; settings put secure accessibility_enabled 1"
+# Ring: Do Not Disturb access, so a ring can get through "Total silence".
+$A $S shell cmd notification allow_dnd home.phonelock

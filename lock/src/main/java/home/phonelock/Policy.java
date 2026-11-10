@@ -16,6 +16,7 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -99,6 +100,15 @@ public final class Policy {
             "no_mount_physical_media",
             "no_set_user_icon",
             "no_set_wallpaper",
+            "no_config_location",
+    };
+
+    /** Runtime permissions the device owner grants to this app. */
+    private static final String[] OWN_PERMISSIONS = {
+            android.Manifest.permission.POST_NOTIFICATIONS,
+            android.Manifest.permission.ACCESS_FINE_LOCATION,
+            android.Manifest.permission.ACCESS_COARSE_LOCATION,
+            android.Manifest.permission.ACCESS_BACKGROUND_LOCATION,
     };
 
     /** Lifted while a parent has unlocked with the PIN. */
@@ -223,17 +233,32 @@ public final class Policy {
             }
         }
 
-        // Let ourselves post notifications (grant/deny messages to the kid).
+        // Our own runtime permissions: notifications (messages to the kid) and location ("find").
+        grantOwnPermissions(c, dpm, a);
+        // "Find" needs location on; no_config_location (above) keeps it on.
+        try { dpm.setLocationEnabled(a, true); } catch (Exception e) { Log.w(TAG, "location on: " + e); }
+        // Only our screenshot service may be an accessibility service, so nothing else can read the screen.
         try {
-            dpm.setPermissionGrantState(a, c.getPackageName(),
-                    android.Manifest.permission.POST_NOTIFICATIONS,
-                    DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED);
-        } catch (Exception ignored) {}
+            dpm.setPermittedAccessibilityServices(a, Collections.singletonList(c.getPackageName()));
+        } catch (Exception e) {
+            Log.w(TAG, "accessibility allowlist: " + e);
+        }
 
         // 4. Hide every launchable app that isn't allowed.
         hideApps(c, dpm, a, lockPkgs);
 
         Log.i(TAG, "applied; parent=" + parent + " lockPkgs=" + lockPkgs);
+    }
+
+    private static void grantOwnPermissions(Context c, DevicePolicyManager dpm, ComponentName a) {
+        for (String perm : OWN_PERMISSIONS) {
+            try {
+                dpm.setPermissionGrantState(a, c.getPackageName(), perm,
+                        DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED);
+            } catch (Exception e) {
+                Log.w(TAG, "grant " + perm + ": " + e);
+            }
+        }
     }
 
     private static void hideApps(Context c, DevicePolicyManager dpm, ComponentName a,
@@ -308,6 +333,7 @@ public final class Policy {
             try { dpm.setApplicationHidden(a, p, false); } catch (Exception ignored) {}
         }
         try { dpm.setGlobalPrivateDnsModeOpportunistic(a); } catch (Exception ignored) {}
+        try { dpm.setPermittedAccessibilityServices(a, null); } catch (Exception ignored) {}
         dpm.setLockTaskPackages(a, new String[0]);
         dpm.clearPackagePersistentPreferredActivities(a, c.getPackageName());
         prefs(c).edit().putString("hidden_by_us", "").apply();

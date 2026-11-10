@@ -7,10 +7,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.pm.ApplicationInfo;
-import android.content.pm.PackageManager;
 import android.graphics.Color;
-import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -19,12 +16,8 @@ import android.text.format.DateFormat;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
-import android.view.ViewGroup;
-import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.EditText;
-import android.widget.GridView;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextClock;
 import android.widget.TextView;
@@ -35,17 +28,11 @@ import java.util.List;
 
 public class HomeActivity extends Activity {
     private final Handler h = new Handler(Looper.getMainLooper());
-    private final List<App> apps = new ArrayList<>();
-    private AppAdapter adapter;
+    private AppGrid homeGrid, allowedGrid;
+    private TextView allowedHeading;
     private LinearLayout parentBar;
     private TextView parentText;
     private boolean receiversOn;
-
-    private static final class App {
-        String pkg;
-        CharSequence label;
-        Drawable icon;
-    }
 
     private final BroadcastReceiver pkgReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) {
@@ -129,16 +116,27 @@ public class HomeActivity extends Activity {
         pbl.topMargin = dp(12);
         root.addView(parentBar, pbl);
 
-        GridView grid = new GridView(this);
-        grid.setNumColumns(4);
-        grid.setVerticalSpacing(dp(20));
-        grid.setStretchMode(GridView.STRETCH_COLUMN_WIDTH);
-        adapter = new AppAdapter();
-        grid.setAdapter(adapter);
-        grid.setOnItemClickListener((p, v, pos, id) -> launch(apps.get(pos).pkg));
+        // Home apps, then (when there are any) the apps a parent has allowed for now, in one scroll view.
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        LinearLayout sections = new LinearLayout(this);
+        sections.setOrientation(LinearLayout.VERTICAL);
+        homeGrid = new AppGrid(this);
+        sections.addView(homeGrid, new LinearLayout.LayoutParams(-1, -2));
+        allowedHeading = new TextView(this);
+        allowedHeading.setText("Allowed for now");
+        allowedHeading.setTextColor(Color.rgb(170, 176, 190));
+        allowedHeading.setTextSize(14);
+        LinearLayout.LayoutParams hl = new LinearLayout.LayoutParams(-1, -2);
+        hl.topMargin = dp(36);
+        hl.bottomMargin = dp(12);
+        hl.leftMargin = dp(8);
+        sections.addView(allowedHeading, hl);
+        allowedGrid = new AppGrid(this);
+        sections.addView(allowedGrid, new LinearLayout.LayoutParams(-1, -2));
+        scroll.addView(sections, new android.widget.FrameLayout.LayoutParams(-1, -2));
         LinearLayout.LayoutParams gl = new LinearLayout.LayoutParams(-1, 0, 1);
         gl.topMargin = dp(32);
-        root.addView(grid, gl);
+        root.addView(scroll, gl);
 
         Button ask = button("Ask for an app", v -> askForApp());
         ask.setTextColor(Color.WHITE);
@@ -159,23 +157,24 @@ public class HomeActivity extends Activity {
             Toast.makeText(this, "Nothing to ask for", Toast.LENGTH_SHORT).show();
             return;
         }
-        String[] labels = new String[pkgs.size()];
-        for (int i = 0; i < labels.length; i++) labels[i] = Remote.label(this, pkgs.get(i));
-        new AlertDialog.Builder(this)
+        // Icons, not a text list: easier to find the app she means.
+        AppGrid grid = new AppGrid(this);
+        int pad = dp(16);
+        grid.setPadding(pad, pad, pad, pad);
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.addView(grid);
+        AlertDialog pick = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("Which app?")
-                .setItems(labels, (d, which) -> {
-                    String[] times = {"30 minutes", "1 hour", "2 hours", "4 hours"};
-                    long[] mins = {30, 60, 120, 240};
-                    new AlertDialog.Builder(this)
-                            .setTitle("For how long?")
-                            .setItems(times, (d2, w2) -> {
-                                boolean ok = Remote.request(this, pkgs.get(which), mins[w2]);
-                                Toast.makeText(this, ok ? "Asked. You'll get a notification."
-                                        : "Wait a minute before asking again", Toast.LENGTH_LONG).show();
-                            })
-                            .show();
-                })
-                .show();
+                .setView(scroll)
+                .setNegativeButton("Cancel", null)
+                .create();
+        List<AppGrid.Entry> choices = AppGrid.load(this, pkgs, false);
+        choices.sort((x, y) -> x.label.toString().compareToIgnoreCase(y.label.toString()));
+        grid.setApps(choices, e -> {
+            pick.dismiss();
+            askHowLong(e);
+        });
+        pick.show();
     }
 
     @Override
@@ -198,6 +197,8 @@ public class HomeActivity extends Activity {
         refresh();
         h.removeCallbacks(tick);
         h.post(tick);
+        // Pressing Home doesn't dismiss a parent's ring; only its Stop button does.
+        if (Ringer.isRinging()) startActivity(new Intent(this, RingActivity.class));
     }
 
     @Override
@@ -254,6 +255,20 @@ public class HomeActivity extends Activity {
         refresh();
     }
 
+    /** Second step of "Ask for an app": how long, then send the request to the parents. */
+    private void askHowLong(AppGrid.Entry app) {
+        String[] times = {"30 minutes", "1 hour", "2 hours", "4 hours"};
+        long[] mins = {30, 60, 120, 240};
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(app.label + " for how long?")
+                .setItems(times, (d, w) -> {
+                    boolean ok = Remote.request(this, app.pkg, mins[w]);
+                    Toast.makeText(this, ok ? "Asked. You'll get a notification."
+                            : "Wait a minute before asking again", Toast.LENGTH_LONG).show();
+                })
+                .show();
+    }
+
     private void askPin() {
         if (!Policy.hasPin(this)) {
             Toast.makeText(this, "No PIN set", Toast.LENGTH_SHORT).show();
@@ -296,21 +311,19 @@ public class HomeActivity extends Activity {
         }
     }
 
+    /** Rebuilds both sections: permanent home apps, and apps allowed for now (with their end time). */
     private void refresh() {
-        PackageManager pm = getPackageManager();
-        apps.clear();
-        for (String p : Policy.homeApps(this)) {
-            if (pm.getLaunchIntentForPackage(p) == null) continue;
-            try {
-                ApplicationInfo ai = pm.getApplicationInfo(p, 0);
-                App a = new App();
-                a.pkg = p;
-                a.label = pm.getApplicationLabel(ai);
-                a.icon = pm.getApplicationIcon(ai);
-                apps.add(a);
-            } catch (PackageManager.NameNotFoundException ignored) {}
-        }
-        adapter.notifyDataSetChanged();
+        homeGrid.setApps(AppGrid.load(this, Policy.visibleApps(this), true), e -> launch(e.pkg));
+
+        java.util.Map<String, Long> grants = Grants.load(this);
+        List<String> extra = new ArrayList<>();
+        for (String p : grants.keySet()) if (!Policy.visibleApps(this).contains(p)) extra.add(p);
+        List<AppGrid.Entry> allowed = AppGrid.load(this, extra, true);
+        for (AppGrid.Entry e : allowed) e.note = "until " + Remote.time(this, grants.get(e.pkg));
+        allowedGrid.setApps(allowed, e -> launch(e.pkg));
+        int vis = allowed.isEmpty() ? View.GONE : View.VISIBLE;
+        allowedHeading.setVisibility(vis);
+        allowedGrid.setVisibility(vis);
     }
 
     private Button button(String text, View.OnClickListener l) {
@@ -323,32 +336,5 @@ public class HomeActivity extends Activity {
 
     private int dp(int v) {
         return Math.round(v * getResources().getDisplayMetrics().density);
-    }
-
-    private final class AppAdapter extends BaseAdapter {
-        @Override public int getCount() { return apps.size(); }
-        @Override public Object getItem(int i) { return apps.get(i); }
-        @Override public long getItemId(int i) { return i; }
-
-        @Override
-        public View getView(int i, View convert, ViewGroup parent) {
-            LinearLayout cell = new LinearLayout(HomeActivity.this);
-            cell.setOrientation(LinearLayout.VERTICAL);
-            cell.setGravity(Gravity.CENTER_HORIZONTAL);
-            ImageView iv = new ImageView(HomeActivity.this);
-            iv.setImageDrawable(apps.get(i).icon);
-            cell.addView(iv, new LinearLayout.LayoutParams(dp(56), dp(56)));
-            TextView tv = new TextView(HomeActivity.this);
-            tv.setText(apps.get(i).label);
-            tv.setTextColor(Color.WHITE);
-            tv.setTextSize(12);
-            tv.setGravity(Gravity.CENTER);
-            tv.setSingleLine(true);
-            tv.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(-1, -2);
-            tl.topMargin = dp(6);
-            cell.addView(tv, tl);
-            return cell;
-        }
     }
 }

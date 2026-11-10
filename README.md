@@ -6,7 +6,7 @@ Two Android apps for locking down a child's phone:
   lock-task (kiosk) mode with an allowlist of apps, hides everything else, and applies user restrictions
   (no SMS, no installs from unknown sources, no account changes, no factory reset, no safe mode, …).
   Parents can grant apps temporarily over [ntfy](https://ntfy.sh).
-- **companion/** – parent app (planned) for granting/revoking apps, seeing status and answering requests.
+- **companion/** – parent app: sets up and pairs child phones, answers requests, grants and revokes apps, finds, rings and views the phone.
 
 ## Build (WSL)
 
@@ -18,14 +18,34 @@ Needs JDK 17, Android SDK (`~/android-sdk`, platform 36, build-tools 36) and Gra
 Signing key and secrets live in `secrets/` (git-ignored). Keep `secrets/phonelock.keystore` safe: updates must be
 signed with the same key.
 
-## Install on the child's phone
+## Set up a child's phone without a PC
+
+In the parent app, tap **Set up a new phone**, enter the child's phone name, your name and a parent PIN (and optionally Wi-Fi), then follow the steps it shows: factory reset the child's phone, tap its first welcome screen 6 times to open Android's setup QR scanner, and scan the code. Android downloads the lock app from the public release (`Setup.LOCK_APK_URL`), checks it is signed with our key, makes it device owner and hands it the pairing and PIN, so the phone starts locked and already connected to that parent's app. USB debugging stays off. The second parent adds the phone from the first parent's app: phone settings > **Share with another parent**.
+
+Afterwards, in parent mode on the child's phone (hold the clock 4 s, enter the PIN), add their Google account and turn on Settings > Accessibility > Parent screen view.
+
+Publishing a release (both APKs, to the GitHub releases the setup code downloads from):
+
+```bash
+tools/publish-release.sh <version>
+```
+
+## Install on the child's phone with adb
 
 The phone must have **no accounts** when the device owner is set (add them back afterwards).
 
 ```bash
-adb install -t lock-release.apk
+adb install lock-release.apk
 adb shell dpm set-device-owner home.phonelock/.AdminReceiver
 ```
+
+Then pair it and switch on screen view and ringing through Do Not Disturb (needs USB debugging, so do it before `debug off`):
+
+```bash
+tools/configure-lock.sh <slug> [adb-serial]
+```
+
+Parents can then find the phone (opens Google Maps), ring it at full volume and view its screen from the parent app. Each screen view can tell the kid or not (the parent's choice, remembered); both parents' activity logs record every view, and location is kept switched on.
 
 ## adb control
 

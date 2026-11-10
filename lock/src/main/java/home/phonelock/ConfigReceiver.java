@@ -105,21 +105,16 @@ public class ConfigReceiver extends BroadcastReceiver {
                 String server = "https://ntfy.sh", topic = v;
                 int bar = v.indexOf('|');
                 if (bar > 0) { server = v.substring(0, bar); topic = v.substring(bar + 1); }
-                Policy.prefs(c).edit().putString("ntfy_server", server)
-                        .putString("ntfy_topic", topic).remove("ntfy_last_id").apply();
-                RemoteService.restart(c);
+                Pairing.setRemote(c, server, topic);
                 return "remote=" + server + "/" + topic;
             }
             case "name":
                 // Display name the parent apps show for this phone.
-                Policy.prefs(c).edit().putString("device_name", value == null ? "Phone" : value).apply();
-                Remote.sendState(c, false);
+                Pairing.setName(c, value);
                 return "name=" + value;
             case "secret":
                 // 32-byte base64url pairing secret shared with the parent companion apps.
-                if (value != null && !value.isEmpty()) Crypto.key(value); // validates
-                Policy.prefs(c).edit().putString("secret", value == null ? "" : value).apply();
-                RemoteService.restart(c);
+                Pairing.setSecret(c, value);
                 return "secret " + (value == null || value.isEmpty() ? "cleared" : "set");
             case "say":
                 // Run a remote-style command locally, e.g. --es value "allow whatsapp 5m"

@@ -52,6 +52,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import kotlinx.coroutines.delay
 import java.util.Date
 
@@ -113,24 +114,45 @@ private fun AddPhoneScreen(initialLink: String?, canCancel: Boolean, done: (Stri
     val parsed = Hub.parsePairing(link)
     var phoneName by remember(parsed?.topic) { mutableStateOf(parsed?.name ?: "") }
 
+    var settingUp by remember { mutableStateOf(false) }
+
     if (scanning) {
         BackHandler { scanning = false }
         QrScanner(onResult = { link = it; scanning = false }, onCancel = { scanning = false })
         return
     }
+    if (settingUp) {
+        SetupPhoneScreen { added -> settingUp = false; if (added != null) done(added) }
+        return
+    }
     if (canCancel) BackHandler { done(null) }
     Column(Modifier.safeDrawingPadding().padding(20.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Add a phone", style = MaterialTheme.typography.headlineSmall)
-        Text("Scan the pairing QR code for the phone you want to manage, or paste its pairing link.")
+        Text("Add a child's phone", style = MaterialTheme.typography.headlineSmall)
+        Text("Connect this app to your child's phone so you can answer requests, give access and find it.")
+        Section("New phone") {
+            Text("Set it up from scratch with a QR code. This erases the phone.")
+            Button(onClick = { settingUp = true }) { Text("Set up a new phone") }
+        }
+        Text("Add a phone that's already set up", style = MaterialTheme.typography.titleMedium)
+        Text("Scan the pairing code from the other parent's app (phone settings > Share with another " +
+            "parent), or paste a pairing link.")
         Button(onClick = { scanning = true }) { Text("Scan QR code") }
         OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth(), label = { Text("Pairing link") },
             isError = link.isNotBlank() && parsed == null,
-            supportingText = { if (parsed != null) Text("Pairing code recognised") })
+            supportingText = {
+                Text(when {
+                    parsed != null -> "Pairing code recognised"
+                    link.isNotBlank() -> "This isn't a PhoneLock pairing link"
+                    else -> "Starts with phonelock://pair"
+                })
+            })
         if (parsed != null) OutlinedTextField(phoneName, { phoneName = it }, Modifier.fillMaxWidth(),
-            label = { Text("Phone name") }, singleLine = true)
+            label = { Text("Child's phone name") }, singleLine = true,
+            supportingText = { Text("What this app calls their phone, e.g. their first name") })
         OutlinedTextField(you, { you = it }, Modifier.fillMaxWidth(),
-            label = { Text("Your name, shown on their notifications") }, singleLine = true)
+            label = { Text("Your name") }, singleLine = true,
+            supportingText = { Text("Shown on their phone, e.g. \"${you.ifBlank { "Dad" }} allowed Camera\"") })
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = {
                 parsed?.let {
@@ -186,14 +208,22 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
 
         if (requests.isNotEmpty()) Section("Requests") {
             requests.forEach { r ->
-                Text("${r.label} for ${fmtMinutes(r.minutes)} · ${time(r.ts)}", fontWeight = FontWeight.Medium)
+                // The child suggests a length; the parent picks the actual one (preselected to the ask).
+                var mins by remember(r.req) { mutableLongStateOf(r.minutes) }
+                Text("${r.label}, asked for ${fmtMinutes(r.minutes)} · ${time(r.ts)}", fontWeight = FontWeight.Medium)
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { Hub.grant(dev, r.app, r.minutes, r.req) }) { Text("Allow ${fmtMinutes(r.minutes)}") }
-                    if (r.minutes != 30L) OutlinedButton(onClick = { Hub.grant(dev, r.app, 30, r.req) }) { Text("30 min") }
+                    (GRANT_DURATIONS + r.minutes).distinct().sorted().forEach { m ->
+                        FilterChip(selected = mins == m, onClick = { mins = m }, label = { Text(fmtMinutes(m)) })
+                    }
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { Hub.grant(dev, r.app, mins, r.req) }) { Text("Allow ${fmtMinutes(mins)}") }
                     OutlinedButton(onClick = { Hub.deny(r) }) { Text("Deny") }
                 }
             }
         }
+
+        FindAndReach(dev, name, state, now)
 
         Section("Allowed right now") {
             val live = state.grants.filterValues { it > now }
@@ -224,7 +254,7 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
                 }
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(15L, 30L, 60L, 120L, 240L, 480L).forEach { m ->
+                GRANT_DURATIONS.forEach { m ->
                     FilterChip(selected = mins == m, onClick = { mins = m }, label = { Text(fmtMinutes(m)) })
                 }
             }
@@ -271,13 +301,16 @@ private fun PhoneMenu(dev: String, name: String, close: () -> Unit) {
     var rename by remember { mutableStateOf(name) }
     var you by remember { mutableStateOf(Hub.parentName.value) }
     var confirmRemove by remember { mutableStateOf(false) }
+    var sharing by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = close,
         title = { Text("Settings") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(rename, { rename = it }, label = { Text("Phone name") }, singleLine = true)
-                OutlinedTextField(you, { you = it }, label = { Text("Your name") }, singleLine = true)
+                OutlinedTextField(rename, { rename = it }, label = { Text("Child's phone name") }, singleLine = true)
+                OutlinedTextField(you, { you = it }, label = { Text("Your name") }, singleLine = true,
+                    supportingText = { Text("Shown on their phone") })
+                TextButton(onClick = { sharing = true }) { Text("Share with another parent…") }
                 TextButton(onClick = { confirmRemove = true }) { Text("Remove this phone…") }
             }
         },
@@ -289,6 +322,9 @@ private fun PhoneMenu(dev: String, name: String, close: () -> Unit) {
             }) { Text("Save") }
         },
         dismissButton = { TextButton(onClick = close) { Text("Close") } })
+    if (sharing) Hub.devices.value.firstOrNull { it.id == dev }?.let { d ->
+        SharePhoneDialog(d.copy(name = name)) { sharing = false }
+    }
     if (confirmRemove) AlertDialog(
         onDismissRequest = { confirmRemove = false },
         title = { Text("Remove $name?") },
@@ -302,7 +338,13 @@ private fun PhoneMenu(dev: String, name: String, close: () -> Unit) {
 private fun BatteryHint() {
     val ctx = LocalContext.current
     val pm = ctx.getSystemService(PowerManager::class.java)
-    if (pm.isIgnoringBatteryOptimizations(ctx.packageName)) return
+    // Re-check whenever the app comes back to the front, e.g. after the system "Allow" dialog.
+    var exempt by remember { mutableStateOf(pm.isIgnoringBatteryOptimizations(ctx.packageName)) }
+    LifecycleResumeEffect(Unit) {
+        exempt = pm.isIgnoringBatteryOptimizations(ctx.packageName)
+        onPauseOrDispose {}
+    }
+    if (exempt) return
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("Allow background use so requests arrive right away.")
@@ -315,7 +357,7 @@ private fun BatteryHint() {
 }
 
 @Composable
-private fun Section(title: String, content: @Composable () -> Unit) {
+internal fun Section(title: String, content: @Composable () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
@@ -326,9 +368,9 @@ private fun Section(title: String, content: @Composable () -> Unit) {
 }
 
 @Composable
-private fun time(t: Long): String = DateFormat.getTimeFormat(LocalContext.current).format(Date(t))
+internal fun time(t: Long): String = DateFormat.getTimeFormat(LocalContext.current).format(Date(t))
 
-private fun ago(ms: Long): String = when {
+internal fun ago(ms: Long): String = when {
     ms < 60_000 -> "just now"
     ms < 3600_000 -> "${ms / 60_000} min ago"
     else -> "${ms / 3600_000} h ago"
