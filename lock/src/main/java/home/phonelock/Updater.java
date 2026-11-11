@@ -26,7 +26,7 @@ import java.security.MessageDigest;
 import java.util.Arrays;
 
 /**
- * Keeps the lock app up to date by itself, from the public GitHub release that QR setup also uses.
+ * Keeps the lock app up to date by itself, from the public GitHub release that setup also installs from.
  * A small version file ({versionCode, sha256, size}) is checked a few times a day and on a parent's
  * "Update now"; a newer build is downloaded and verified (package name, newer version, checksum, and the
  * same signing key as this app), then installed silently, as device owner, the next time the screen is off

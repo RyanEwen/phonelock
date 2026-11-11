@@ -56,7 +56,7 @@ A desktop program bundling adb.
 2. Add **C** later as the fallback for Android 10 and older, or when the two devices can't share a network.
 3. Skip B and D unless real devices need them.
 
-Either way, the QR setup can then be removed, and the Play listing can say "set up from your phone, no computer needed" for Android 13+ child devices.
+QR setup has since been removed (Nov 2026), and the Play listing can say "set up from your phone, no computer needed" for Android 13+ child devices.
 
 ## Open questions
 

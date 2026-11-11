@@ -1,6 +1,6 @@
 #!/bin/bash
-# Publish both APKs as a GitHub release on this (public) repo. QR setup installs the lock app from the
-# latest release, and installed lock apps update themselves from it, using lock-version.json to decide.
+# Publish both APKs as a GitHub release on this (public) repo. The parent app's phone-to-phone setup
+# installs the lock app from the latest release, and installed lock apps update themselves from it, using lock-version.json to decide.
 # Anything published reaches children's devices unattended: only publish a build already tested on a device
 # over adb (a lock app that crashes on start can't be fixed remotely).
 #   tools/publish-release.sh            # builds from the committed, pushed HEAD
@@ -22,6 +22,6 @@ printf '{"versionCode":%s,"sha256":"%s","size":%s}\n' "$version" \
   "$(sha256sum "$lock" | cut -c1-64)" "$(stat -c %s "$lock")" > "$out/lock-version.json"
 
 gh release create "v1.0.$version" --repo "$REPO" --title "PhoneLock 1.0.$version" --latest \
-  --notes "Lock app installs through the parent app's setup QR code and updates itself. Parent app: PhoneLock-parent.apk." \
+  --notes "Lock app installs from the parent app's \"Set up a new device\" and updates itself. Parent app: PhoneLock-parent.apk." \
   "$lock" "$out/lock-version.json" "$out/PhoneLock-parent.apk"
 rm -rf "$out"

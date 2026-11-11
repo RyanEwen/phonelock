@@ -268,9 +268,9 @@ public class HomeActivity extends Activity {
         body.setPadding(pad, pad, pad, pad);
         AppGrid grid = new AppGrid(this);
         body.addView(grid);
-        // One pill per row, centred: their names are too long to sit side by side in the dialog.
+        // Side by side, centred; "settings" goes on its own line so both fit across the dialog.
         LinearLayout pills = new LinearLayout(this);
-        pills.setOrientation(LinearLayout.VERTICAL);
+        pills.setOrientation(LinearLayout.HORIZONTAL);
         pills.setGravity(Gravity.CENTER_HORIZONTAL);
         LinearLayout.LayoutParams pillsLp = new LinearLayout.LayoutParams(-1, -2);
         pillsLp.topMargin = dp(16);
@@ -298,9 +298,10 @@ public class HomeActivity extends Activity {
             icon.setImageDrawable(e.icon);
             pill.addView(icon, new LinearLayout.LayoutParams(dp(30), dp(30)));
             TextView name = new TextView(this);
-            name.setText(e.label);
+            name.setText(e.label.toString().replace(" settings", "\nsettings"));
             name.setTextColor(Color.WHITE);
             name.setTextSize(15);
+            name.setLineSpacing(0, 0.9f);
             name.setPadding(dp(10), 0, 0, 0);
             pill.addView(name);
             pill.setOnClickListener(v -> {
@@ -308,7 +309,7 @@ public class HomeActivity extends Activity {
                 askHowLong(e);
             });
             LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(-2, -2);
-            pl.bottomMargin = dp(10);
+            pl.setMarginStart(pills.getChildCount() > 0 ? dp(10) : 0);
             pills.addView(pill, pl);
         }
         pick.show();

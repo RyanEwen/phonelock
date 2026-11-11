@@ -9,9 +9,4 @@ public class AdminReceiver extends DeviceAdminReceiver {
     public void onEnabled(Context c, Intent i) {
         Policy.apply(c);
     }
-
-    @Override
-    public void onProfileProvisioningComplete(Context c, Intent i) {
-        Policy.apply(c);
-    }
 }
