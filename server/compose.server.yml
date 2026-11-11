@@ -16,6 +16,13 @@ services:
       - ./secrets:/etc/ntfy/secrets:ro
       - hub-cache:/var/cache/ntfy
     networks: [default, nginx_default]
+    # Bounded logs: a few MB of recent lines, oldest dropped first (the default json-file driver keeps
+    # everything forever).
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: "2"
     security_opt: [no-new-privileges:true]
     pids_limit: ${HUB_PIDS_LIMIT:-256}
     mem_limit: ${HUB_MEMORY_LIMIT:-512m}
