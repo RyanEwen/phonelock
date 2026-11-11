@@ -90,7 +90,7 @@ private fun clock(minutes: Int): String {
 internal fun AppTableSection(dev: String, state: PhoneState) {
     var adding by remember(dev) { mutableStateOf(false) }
     Section("Apps and when they're allowed") {
-        if (!state.full) Text("Loading the phone's settings… Changes are possible once they arrive.",
+        if (!state.full) Text("Loading the device's settings… Changes are possible once they arrive.",
             style = MaterialTheme.typography.bodySmall)
         Text("Ticked apps are on their home screen during that time. Untick all three to allow it only for a while.",
             style = MaterialTheme.typography.bodySmall)

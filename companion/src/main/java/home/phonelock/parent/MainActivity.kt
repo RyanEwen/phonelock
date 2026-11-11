@@ -59,13 +59,16 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import kotlinx.coroutines.delay
 import java.util.Date
 
+private const val INTENT_USED = "intent_used"
+
 class MainActivity : ComponentActivity() {
     private val pendingLink = mutableStateOf<String?>(null)
     private val selected = mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        readIntent(intent)
+        // A recreated activity still carries its original intent; read it only if it wasn't used yet.
+        if (savedInstanceState?.getBoolean(INTENT_USED) != true) readIntent(intent)
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
@@ -92,9 +95,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** Takes a pairing link or a device to show from [i], then clears them so they're used once. */
     private fun readIntent(i: Intent?) {
         i?.dataString?.let { pendingLink.value = it }
         i?.getStringExtra("device")?.let { selected.value = it }
+        i?.let { setIntent(Intent(it).setData(null).apply { removeExtra("device") }) }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(INTENT_USED, true)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -131,14 +141,14 @@ private fun AddPhoneScreen(initialLink: String?, canCancel: Boolean, done: (Stri
     if (canCancel) BackHandler { done(null) }
     Column(Modifier.safeDrawingPadding().padding(20.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Add a child's phone", style = MaterialTheme.typography.headlineSmall)
-        Text("Connect this app to your child's phone so you can answer requests, give access and find it.")
-        Section("New phone") {
-            Text("Set it up from scratch with a QR code. This erases the phone.")
-            Button(onClick = { settingUp = true }) { Text("Set up a new phone") }
+        Text("Add a child's device", style = MaterialTheme.typography.headlineSmall)
+        Text("Connect this app to your child's phone or tablet so you can answer requests, give access and find it.")
+        Section("New device") {
+            Text("Set it up from scratch with a QR code. This erases the device.")
+            Button(onClick = { settingUp = true }) { Text("Set up a new device") }
         }
-        Text("Add a phone that's already set up", style = MaterialTheme.typography.titleMedium)
-        Text("Scan the pairing code from the other parent's app (phone settings > Share with another " +
+        Text("Add a device that's already set up", style = MaterialTheme.typography.titleMedium)
+        Text("Scan the pairing code from the other parent's app (device settings > Share with another " +
             "parent), or paste a pairing link.")
         Button(onClick = { scanning = true }) { Text("Scan QR code") }
         OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth(), label = { Text("Pairing link") },
@@ -151,11 +161,11 @@ private fun AddPhoneScreen(initialLink: String?, canCancel: Boolean, done: (Stri
                 })
             })
         if (parsed != null) OutlinedTextField(phoneName, { phoneName = it }, Modifier.fillMaxWidth(),
-            label = { Text("Child's phone name") }, singleLine = true,
-            supportingText = { Text("What this app calls their phone, e.g. their first name") })
+            label = { Text("Child's device name") }, singleLine = true,
+            supportingText = { Text("What this app calls their device, e.g. their first name") })
         OutlinedTextField(you, { you = it }, Modifier.fillMaxWidth(),
             label = { Text("Your name") }, singleLine = true,
-            supportingText = { Text("Shown on their phone, e.g. \"${you.ifBlank { "Dad" }} allowed Camera\"") })
+            supportingText = { Text("Shown on their device, e.g. \"${you.ifBlank { "Dad" }} allowed Camera\"") })
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = {
                 parsed?.let {
@@ -163,7 +173,7 @@ private fun AddPhoneScreen(initialLink: String?, canCancel: Boolean, done: (Stri
                     Hub.addDevice(it.copy(name = phoneName.ifBlank { it.name }))
                     done(it.id)
                 }
-            }, enabled = parsed != null && you.isNotBlank()) { Text("Add phone") }
+            }, enabled = parsed != null && you.isNotBlank()) { Text("Add device") }
             if (canCancel) TextButton(onClick = { done(null) }) { Text("Cancel") }
         }
     }
@@ -193,9 +203,10 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
                 FilterChip(selected = d.id == dev, onClick = { onSelect(d.id) },
                     label = { Text(Hub.deviceName(d.id) + if (pending > 0) "  •$pending" else "") })
             }
-            TextButton(onClick = onAdd) { Text("+ Add phone") }
+            TextButton(onClick = onAdd) { Text("+ Add device") }
         }
-        PhoneHeader(name, state, connected, now, onRefresh = { Hub.refresh(dev) }, onMenu = { menu = true })
+        val device = devices.firstOrNull { it.id == dev }
+        PhoneHeader(name, state, connected || (device != null && Push.covers(device)), now, onRefresh = { Hub.refresh(dev) }, onMenu = { menu = true })
         BatteryHint()
 
         if (requests.isNotEmpty()) Section("Requests") {
@@ -248,11 +259,11 @@ private fun PhoneMenu(dev: String, name: String, close: () -> Unit) {
         title = { Text("Settings") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(rename, { rename = it }, label = { Text("Child's phone name") }, singleLine = true)
+                OutlinedTextField(rename, { rename = it }, label = { Text("Child's device name") }, singleLine = true)
                 OutlinedTextField(you, { you = it }, label = { Text("Your name") }, singleLine = true,
-                    supportingText = { Text("Shown on their phone") })
+                    supportingText = { Text("Shown on their device") })
                 TextButton(onClick = { sharing = true }) { Text("Share with another parent…") }
-                TextButton(onClick = { confirmRemove = true }) { Text("Remove this phone…") }
+                TextButton(onClick = { confirmRemove = true }) { Text("Remove this device…") }
             }
         },
         confirmButton = {
@@ -269,7 +280,7 @@ private fun PhoneMenu(dev: String, name: String, close: () -> Unit) {
     if (confirmRemove) AlertDialog(
         onDismissRequest = { confirmRemove = false },
         title = { Text("Remove $name?") },
-        text = { Text("This app stops managing it. The phone stays locked; you'll need its pairing QR code to add it again.") },
+        text = { Text("This app stops managing it. The device stays locked; you'll need its pairing QR code to add it again.") },
         confirmButton = { TextButton(onClick = { Hub.removeDevice(dev); confirmRemove = false; close() }) { Text("Remove") } },
         dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("Cancel") } })
 }

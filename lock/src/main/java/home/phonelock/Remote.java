@@ -117,7 +117,7 @@ public final class Remote {
                 long now = System.currentTimeMillis();
                 long until = Math.min(now, m.optLong("ts", now)) + mins * 60_000L;
                 if (until <= now) {
-                    event(c, label(c, pkg) + " was allowed while the phone was offline; that time has passed");
+                    event(c, label(c, pkg) + " was allowed while the device was offline; that time has passed");
                     break;
                 }
                 Map<String, Long> g = Grants.load(c);
@@ -228,7 +228,7 @@ public final class Remote {
             } else {
                 boolean was = Ringer.isRinging();
                 Ringer.start(c, who, seconds);
-                if (!was) event(c, who + " is ringing the phone", who, false);
+                if (!was) event(c, who + " is ringing the device", who, false);
             }
         });
     }
@@ -299,7 +299,7 @@ public final class Remote {
                 home.put(p);
                 labels.put(p, label(c, p));
             }
-            o.put("name", Policy.prefs(c).getString("device_name", "Phone"));
+            o.put("name", Policy.prefs(c).getString("device_name", "Device"));
             o.put("grants", grants);
             o.put("home", home);
             o.put("parent", Policy.inParentMode(c));

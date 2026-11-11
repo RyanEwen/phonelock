@@ -49,7 +49,7 @@ public class RemoteService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         NotificationManager nm = getSystemService(NotificationManager.class);
-        nm.createNotificationChannel(new NotificationChannel("lock", "Phone lock",
+        nm.createNotificationChannel(new NotificationChannel("lock", "Parent controls",
                 NotificationManager.IMPORTANCE_MIN));
         Notification n = new Notification.Builder(this, "lock")
                 .setSmallIcon(android.R.drawable.ic_lock_lock)

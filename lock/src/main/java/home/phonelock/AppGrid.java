@@ -19,7 +19,10 @@ import java.util.List;
  * "Ask for an app" picker. It sizes to its content, so several grids can share one scroll view.
  */
 final class AppGrid extends LinearLayout {
-    static final int COLUMNS = 4;
+    /** Fewest columns (phones in portrait); wider screens such as tablets fit more. */
+    static final int MIN_COLUMNS = 4;
+    /** Width each icon cell needs, in dp, when working out how many fit. */
+    private static final int CELL_DP = 96;
 
     /** One app cell. {@code note}, if set, is a second line under the label (e.g. "until 6:22"). */
     static final class Entry {
@@ -64,9 +67,11 @@ final class AppGrid extends LinearLayout {
     /** Replaces the grid's contents; tapping a cell calls {@code onPick}. */
     void setApps(List<Entry> entries, OnPick onPick) {
         removeAllViews();
+        int widthDp = getResources().getConfiguration().screenWidthDp;
+        int columns = Math.max(MIN_COLUMNS, Math.min(8, widthDp / CELL_DP));
         LinearLayout row = null;
         for (int i = 0; i < entries.size(); i++) {
-            if (i % COLUMNS == 0) {
+            if (i % columns == 0) {
                 row = new LinearLayout(getContext());
                 row.setOrientation(HORIZONTAL);
                 LayoutParams rl = new LayoutParams(-1, -2);
@@ -80,7 +85,7 @@ final class AppGrid extends LinearLayout {
         }
         // Pad the last row so its cells keep the same width as the rows above.
         if (row != null) {
-            for (int k = entries.size() % COLUMNS; k != 0 && k < COLUMNS; k++) {
+            for (int k = entries.size() % columns; k != 0 && k < columns; k++) {
                 row.addView(new android.view.View(getContext()), new LayoutParams(0, 1, 1));
             }
         }
@@ -90,7 +95,8 @@ final class AppGrid extends LinearLayout {
         LinearLayout cell = new LinearLayout(getContext());
         cell.setOrientation(VERTICAL);
         cell.setGravity(Gravity.CENTER_HORIZONTAL);
-        cell.setBackgroundResource(android.R.drawable.list_selector_background);
+        cell.setBackground(touchFeedback());
+        cell.setPadding(0, dp(8), 0, dp(8));
 
         ImageView iv = new ImageView(getContext());
         iv.setImageDrawable(e.icon);
@@ -101,6 +107,15 @@ final class AppGrid extends LinearLayout {
         cell.addView(text(e.label, 12, Color.WHITE), tl);
         if (e.note != null) cell.addView(text(e.note, 11, Color.rgb(170, 176, 190)), new LayoutParams(-1, -2));
         return cell;
+    }
+
+    /** A soft white ripple in a rounded square, like current launchers, instead of the old yellow highlight. */
+    private android.graphics.drawable.RippleDrawable touchFeedback() {
+        android.graphics.drawable.GradientDrawable mask = new android.graphics.drawable.GradientDrawable();
+        mask.setColor(Color.WHITE);
+        mask.setCornerRadius(dp(20));
+        return new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(Color.argb(48, 255, 255, 255)), null, mask);
     }
 
     private TextView text(CharSequence s, int sp, int color) {

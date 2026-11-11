@@ -29,8 +29,7 @@
             android:lockTaskMode="if_whitelisted"
             android:excludeFromRecents="true"
             android:stateNotNeeded="true"
-            android:screenOrientation="portrait"
-            android:configChanges="orientation|screenSize|keyboardHidden|uiMode">
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />
@@ -79,9 +78,9 @@
         <activity
             android:name=".RingActivity"
             android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:launchMode="singleTask"
             android:excludeFromRecents="true"
-            android:screenOrientation="portrait"
             android:taskAffinity="home.phonelock.ring" />
 
         <!-- Screenshots on a parent's request. Enabled once over adb; see tools/configure-lock.sh. -->

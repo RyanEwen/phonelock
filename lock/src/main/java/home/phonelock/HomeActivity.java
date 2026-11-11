@@ -258,6 +258,13 @@ public class HomeActivity extends Activity {
     @Override
     public void onBackPressed() { /* home screen: nowhere to go back to */ }
 
+    /** Rotation or a tablet's window change: re-flow the icon grids for the new width. */
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration c) {
+        super.onConfigurationChanged(c);
+        refresh();
+    }
+
     private void enforceLockTask() {
         if (!Policy.isOwner(this)) return;
         ActivityManager am = getSystemService(ActivityManager.class);

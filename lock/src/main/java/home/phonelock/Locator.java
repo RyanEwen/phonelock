@@ -33,12 +33,12 @@ final class Locator {
     static void locate(Context c, String req) {
         LocationManager lm = c.getSystemService(LocationManager.class);
         if (!lm.isLocationEnabled()) {
-            reply(c, req, null, "Location is turned off on the phone");
+            reply(c, req, null, "Location is turned off on the device");
             return;
         }
         String provider = pickProvider(lm);
         if (provider == null) {
-            reply(c, req, null, "No location provider on the phone");
+            reply(c, req, null, "No location provider on the device");
             return;
         }
 
@@ -64,7 +64,7 @@ final class Locator {
         } catch (SecurityException e) {
             done.set(true);
             main.removeCallbacks(timeout);
-            reply(c, req, null, "The phone has no location permission");
+            reply(c, req, null, "The device has no location permission");
         }
     }
 

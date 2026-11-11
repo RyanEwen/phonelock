@@ -60,7 +60,7 @@ public class RingActivity extends Activity {
         stop.setText("Stop");
         stop.setTextSize(24);
         stop.setOnClickListener(v -> {
-            String name = Policy.prefs(this).getString("device_name", "The phone");
+            String name = Policy.prefs(this).getString("device_name", "The device");
             Ringer.stop(this, name + " stopped the ringing", null);
             finish();
         });

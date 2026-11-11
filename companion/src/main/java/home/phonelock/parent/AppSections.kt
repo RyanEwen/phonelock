@@ -139,7 +139,7 @@ internal fun AllowForAWhileSection(dev: String, state: PhoneState) {
 
     Section("Allow for a while") {
         if (state.others.isEmpty() && state.notOffered.isEmpty()) {
-            Text("Tap Refresh to load the phone's apps.", style = MaterialTheme.typography.bodySmall)
+            Text("Tap Refresh to load the device's apps.", style = MaterialTheme.typography.bodySmall)
         }
         if (editing) {
             Text("Tap an app to take it off this list. They won't be able to ask for it either.",

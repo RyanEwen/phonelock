@@ -43,7 +43,7 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Receives requests and alerts from a child's phone" />
+                android:value="Receives requests and alerts from a child's device" />
         </service>
 
         <!-- Pushes from the PhoneLock hub (Firebase Cloud Messaging). -->

@@ -44,7 +44,7 @@ final class Pairing {
 
     /** Sets the name the parent apps show for this phone, and tells them. */
     static void setName(Context c, String name) {
-        Policy.prefs(c).edit().putString("device_name", name == null || name.isEmpty() ? "Phone" : name).apply();
+        Policy.prefs(c).edit().putString("device_name", name == null || name.isEmpty() ? "Device" : name).apply();
         Remote.sendState(c, false);
     }
 
@@ -65,7 +65,7 @@ final class Pairing {
             return false;
         }
         storeRemote(c, extras.getString(EXTRA_SERVER, "https://ntfy.sh"), topic);
-        Policy.prefs(c).edit().putString("device_name", extras.getString(EXTRA_NAME, "Phone")).apply();
+        Policy.prefs(c).edit().putString("device_name", extras.getString(EXTRA_NAME, "Device")).apply();
         String pin = extras.getString(EXTRA_PIN, "");
         if (pin.length() >= 4) Policy.setPin(c, pin);
         return true;

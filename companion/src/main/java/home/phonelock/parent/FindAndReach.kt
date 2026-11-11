@@ -147,7 +147,7 @@ private fun ScreenResult(dev: String, shot: PhoneScreen, capturing: Boolean) {
 
     shot.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     shot.image?.let {
-        Image(it, contentDescription = "Phone screen", Modifier.fillMaxWidth().heightIn(max = 560.dp),
+        Image(it, contentDescription = "Device screen", Modifier.fillMaxWidth().heightIn(max = 560.dp),
             contentScale = ContentScale.Fit)
     }
     Text(listOfNotNull(shot.label, time(shot.ts)).joinToString(" · "), style = MaterialTheme.typography.bodySmall)

@@ -27,7 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
 /**
- * The selected phone at a glance: name, connection, last update, and the current situation as a pill
+ * The selected device at a glance: name, connection (live connection or push), last update, and the current situation as a pill
  * (e.g. "Bedtime until 7:00 AM"), with refresh and settings.
  */
 @Composable
@@ -41,7 +41,7 @@ internal fun PhoneHeader(name: String, state: PhoneState, connected: Boolean, no
                 Text(name, Modifier.weight(1f), style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
                 IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, contentDescription = "Refresh") }
-                IconButton(onClick = onMenu) { Icon(Icons.Default.MoreVert, contentDescription = "Phone settings") }
+                IconButton(onClick = onMenu) { Icon(Icons.Default.MoreVert, contentDescription = "Device settings") }
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 // Green when the live connection is up, amber while reconnecting.

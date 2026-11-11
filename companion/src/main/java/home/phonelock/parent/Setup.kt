@@ -31,7 +31,7 @@ object Setup {
     fun newDevice(name: String): Device {
         val topic = "pl-" + randomBase32(24)
         val secret = b64.encodeToString(ByteArray(32).also(rng::nextBytes))
-        return Device(DEFAULT_SERVER, topic, secret, name.trim().ifBlank { "Phone" })
+        return Device(DEFAULT_SERVER, topic, secret, name.trim().ifBlank { "Device" })
     }
 
     /** phonelock://pair?s=…&t=…&k=…&n=…, the link [Hub.parsePairing] reads. */

@@ -59,7 +59,7 @@ public class ScreenService extends AccessibilityService {
     static void capture(Context c, String req, String who) {
         ScreenService s = instance;
         if (s == null) {
-            reply(c, req, null, "Screen view isn't switched on. On the phone, unlock parent mode and turn on Settings > Accessibility > Parent screen view", null);
+            reply(c, req, null, "Screen view isn't switched on. On the device, unlock parent mode and turn on Settings > Accessibility > Parent screen view", null);
             return;
         }
         PowerManager pm = c.getSystemService(PowerManager.class);

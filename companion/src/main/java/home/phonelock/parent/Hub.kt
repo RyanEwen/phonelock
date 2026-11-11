@@ -113,7 +113,7 @@ object Hub {
         prefs.getString("config", null)?.let { s ->
             val o = JSONObject(s)
             if (_parentName.value.isEmpty()) setParentName(o.optString("name"))
-            addDevice(Device(o.getString("server"), o.getString("topic"), o.getString("secret"), "Phone"))
+            addDevice(Device(o.getString("server"), o.getString("topic"), o.getString("secret"), "Device"))
             prefs.edit().remove("config").remove("state").remove("requests").remove("events").apply()
         }
         prefs.getString("states", null)?.let { s ->
@@ -143,8 +143,8 @@ object Hub {
     }
 
     fun deviceName(id: String): String =
-        _states.value[id]?.name?.takeIf { it.isNotBlank() && it != "Phone" }
-            ?: _devices.value.firstOrNull { it.id == id }?.name ?: "Phone"
+        _states.value[id]?.name?.takeIf { it.isNotBlank() && it != "Phone" && it != "Device" }
+            ?: _devices.value.firstOrNull { it.id == id }?.name ?: "Device"
 
     // ---------- pairing ----------
 
@@ -155,7 +155,7 @@ object Hub {
         val k = u.getQueryParameter("k")!!
         Crypto.key(k)
         Device((u.getQueryParameter("s") ?: "https://ntfy.sh").trimEnd('/'), u.getQueryParameter("t")!!, k,
-            u.getQueryParameter("n")?.takeIf { it.isNotBlank() } ?: "Phone")
+            u.getQueryParameter("n")?.takeIf { it.isNotBlank() } ?: "Device")
     }.getOrNull()
 
     fun setParentName(name: String) {
@@ -169,6 +169,8 @@ object Hub {
         _devices.update { l -> l.filterNot { it.id == d.id } + d }
         saveDevices()
         Push.sync(listOf(d))
+        // Fetch its current state now rather than waiting for the next app resume.
+        refresh(d.id)
         ParentService.restart(app)
     }
 
@@ -400,7 +402,7 @@ object Hub {
     fun channels(c: Context) {
         val nm = c.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("requests", "Requests", NotificationManager.IMPORTANCE_HIGH))
-        nm.createNotificationChannel(NotificationChannel("events", "Phone activity", NotificationManager.IMPORTANCE_DEFAULT))
+        nm.createNotificationChannel(NotificationChannel("events", "Device activity", NotificationManager.IMPORTANCE_DEFAULT))
         nm.createNotificationChannel(NotificationChannel("others", "Other parent's actions", NotificationManager.IMPORTANCE_LOW))
         nm.createNotificationChannel(NotificationChannel("service", "Connection", NotificationManager.IMPORTANCE_MIN))
     }
