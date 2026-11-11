@@ -1,8 +1,5 @@
 package home.phonelock.parent
 
-import android.content.ActivityNotFoundException
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -78,8 +75,8 @@ internal fun FindAndReach(dev: String, name: String, state: PhoneState, now: Lon
     Section("Find and reach") {
         // Three equal tonal tiles: icon above label, easy to hit with a thumb.
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            ActionTile(Icons.Default.LocationOn, if (dev in locating) "Locating…" else "Location",
-                enabled = dev !in locating, modifier = Modifier.weight(1f)) { PhoneTools.find(dev) }
+            // Location opens the map page, which finds the device and shows where it has been.
+            ActionTile(Icons.Default.LocationOn, "Location", modifier = Modifier.weight(1f)) { onOpen("history") }
             if (state.ringing) {
                 ActionTile(Icons.Default.Notifications, "Stop ringing", highlighted = true,
                     modifier = Modifier.weight(1f)) { PhoneTools.stopRinging(dev) }
@@ -91,7 +88,7 @@ internal fun FindAndReach(dev: String, name: String, state: PhoneState, now: Lon
         }
         // Second row, same widths: pages for calls, contacts and files.
         MoreRow(onOpen)
-        locations[dev]?.let { LocationResult(it, name, now) }
+
         screens[dev]?.let { ScreenResult(dev, it, capturing = dev in capturing) }
     }
 
@@ -103,33 +100,6 @@ internal fun FindAndReach(dev: String, name: String, state: PhoneState, now: Lon
             TextButton(onClick = { PhoneTools.ring(dev); confirmRing = false }) { Text("Ring") }
         },
         dismissButton = { TextButton(onClick = { confirmRing = false }) { Text("Cancel") } })
-}
-
-@Composable
-private fun LocationResult(loc: PhoneLocation, name: String, now: Long) {
-    val ctx = LocalContext.current
-    val parts = buildList {
-        loc.accuracyM?.let { add("within $it m") }
-        loc.fixTime?.let { add("seen ${ago(now - it)}") }
-        loc.battery?.let { add("battery $it%" + if (loc.charging) " (charging)" else "") }
-    }
-    loc.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-    loc.address?.let { Text(it, style = MaterialTheme.typography.bodyLarge) }
-    if (parts.isNotEmpty()) Text(parts.joinToString(" · ").replaceFirstChar { it.uppercase() },
-        style = MaterialTheme.typography.bodyMedium)
-    if (loc.lat != null && loc.lng != null) {
-        TextButton(onClick = {
-            // A geo: link opens Google Maps (or any map app) with a pin; no map SDK needed.
-            val label = Uri.encode(name)
-            val uri = Uri.parse("geo:${loc.lat},${loc.lng}?q=${loc.lat},${loc.lng}($label)")
-            try {
-                ctx.startActivity(Intent(Intent.ACTION_VIEW, uri))
-            } catch (e: ActivityNotFoundException) {
-                ctx.startActivity(Intent(Intent.ACTION_VIEW,
-                    Uri.parse("https://maps.google.com/?q=${loc.lat},${loc.lng}")))
-            }
-        }) { Text("Show on map") }
-    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)

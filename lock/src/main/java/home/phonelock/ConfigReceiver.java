@@ -110,6 +110,21 @@ public class ConfigReceiver extends BroadcastReceiver {
             case "say":
                 // Run a remote-style command locally, e.g. --es value "allow whatsapp 5m"
                 return Grants.command(c, value == null ? "" : value);
+            case "pair": {
+                // Everything a new parent pairing needs, applied together (the parent app's phone-to-phone
+                // setup): value = JSON {server, topic, secret, name, pin}. All or nothing, so an interrupted
+                // setup can't leave a device holding a secret no parent has, or no PIN.
+                org.json.JSONObject o = new org.json.JSONObject(value == null ? "{}" : value);
+                String pin = o.optString("pin");
+                if (pin.length() < 4 || o.optString("topic").isEmpty() || o.optString("secret").isEmpty()) {
+                    return "refused: incomplete pairing";
+                }
+                Policy.setPin(c, pin);
+                Pairing.setName(c, o.optString("name", "Device"));
+                Pairing.setRemote(c, o.optString("server", "https://ntfy.sh"), o.optString("topic"));
+                Pairing.setSecret(c, o.optString("secret"));
+                return "paired topic=" + topicHash(o.optString("topic"));
+            }
             case "release":
                 Policy.releaseAll(c);
                 dpm.clearDeviceOwnerApp(c.getPackageName());
@@ -117,12 +132,31 @@ public class ConfigReceiver extends BroadcastReceiver {
             case "status":
             default:
                 return "owner=" + Policy.isOwner(c)
+                        + " paired=" + Remote.paired(c)
+                        + " topic=" + topicHash(RemoteService.topic(c))
                         + " parent=" + Policy.inParentMode(c)
                         + " pin=" + Policy.hasPin(c)
                         + " apps=" + Policy.visibleApps(c)
                         + " hidden=" + Policy.prefs(c).getString("hidden_by_us", "")
                         + " dns=" + (Policy.isOwner(c) ? dpm.getGlobalPrivateDnsHost(a) : "?")
                         + " debug=" + Policy.prefs(c).getBoolean("allow_debugging", true);
+        }
+    }
+
+    /**
+     * A short fingerprint of the pairing's topic, so the parent app's setup can tell whether this device is
+     * paired with it (it compares its own topics) without the topic itself being printed.
+     */
+    static String topicHash(String topic) {
+        if (topic == null || topic.isEmpty()) return "none";
+        try {
+            byte[] h = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(topic.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 8; i++) sb.append(String.format("%02x", h[i]));
+            return sb.toString();
+        } catch (Exception e) {
+            return "none";
         }
     }
 }

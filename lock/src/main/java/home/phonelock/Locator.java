@@ -1,11 +1,9 @@
 package home.phonelock;
 
 import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
 import android.location.Location;
 import android.location.LocationManager;
-import android.os.BatteryManager;
+import android.location.LocationRequest;
 import android.os.CancellationSignal;
 import android.os.Handler;
 import android.os.Looper;
@@ -36,35 +34,80 @@ final class Locator {
             reply(c, req, null, "Location is turned off on the device");
             return;
         }
-        String provider = pickProvider(lm);
-        if (provider == null) {
+        if (pickProvider(lm) == null) {
             reply(c, req, null, "No location provider on the device");
+            return;
+        }
+        if (c.checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            reply(c, req, null, "The device has no location permission");
+            return;
+        }
+        fix(c, true, loc -> reply(c, req, loc, loc == null ? "No location fix yet" : null));
+    }
+
+    /**
+     * Blocking form of {@link #fix} for background work (the location log): the fix, or null if there is
+     * none. Waits at most the fix timeout; never call on the main thread.
+     */
+    static Location fixNow(Context c, boolean precise) {
+        java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(1);
+        Location[] out = new Location[1];
+        fix(c, precise, loc -> {
+            out[0] = loc;
+            done.countDown();
+        });
+        try {
+            done.await(TIMEOUT_MS + 5_000, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {}
+        return out[0];
+    }
+
+    /**
+     * Gets a fresh fix and hands it to {@code done} on the main thread exactly once: the fix, else the last
+     * known one if no fresh fix arrives in time, else null (location off, no provider, no permission).
+     * {@code precise} is a parent tapping "Location" (the system's default request); otherwise a balanced,
+     * lower-power reading is enough (the 15-minute log), which the fused provider gets from Wi-Fi and cell.
+     */
+    static void fix(Context c, boolean precise, java.util.function.Consumer<Location> done) {
+        LocationManager lm = c.getSystemService(LocationManager.class);
+        String provider = lm.isLocationEnabled() ? pickProvider(lm) : null;
+        if (provider == null) {
+            done.accept(null);
             return;
         }
 
         // getCurrentLocation reports at most once; the timeout path covers a provider that never answers.
-        AtomicBoolean done = new AtomicBoolean(false);
+        AtomicBoolean answered = new AtomicBoolean(false);
         CancellationSignal cancel = new CancellationSignal();
         Handler main = new Handler(Looper.getMainLooper());
         Runnable timeout = () -> {
-            if (!done.compareAndSet(false, true)) return;
+            if (!answered.compareAndSet(false, true)) return;
             cancel.cancel();
-            Location last = lastKnown(lm);
-            reply(c, req, last, last == null ? "No location fix yet" : null);
+            done.accept(lastKnown(lm));
         };
         main.postDelayed(timeout, TIMEOUT_MS);
 
-        try {
-            lm.getCurrentLocation(provider, cancel, c.getMainExecutor(), loc -> {
-                if (!done.compareAndSet(false, true)) return;
-                main.removeCallbacks(timeout);
-                Location best = loc != null ? loc : lastKnown(lm);
-                reply(c, req, best, best == null ? "No location fix yet" : null);
-            });
-        } catch (SecurityException e) {
-            done.set(true);
+        java.util.function.Consumer<Location> got = loc -> {
+            if (!answered.compareAndSet(false, true)) return;
             main.removeCallbacks(timeout);
-            reply(c, req, null, "The device has no location permission");
+            done.accept(loc != null ? loc : lastKnown(lm));
+        };
+        try {
+            if (precise) {
+                // The parent's "Location" button: unchanged from before (the system's default request).
+                lm.getCurrentLocation(provider, cancel, c.getMainExecutor(), got);
+            } else {
+                LocationRequest request = new LocationRequest.Builder(0)
+                        .setQuality(LocationRequest.QUALITY_BALANCED_POWER_ACCURACY)
+                        .setDurationMillis(TIMEOUT_MS)
+                        .build();
+                lm.getCurrentLocation(provider, request, cancel, c.getMainExecutor(), got);
+            }
+        } catch (SecurityException e) {
+            if (!answered.compareAndSet(false, true)) return;
+            main.removeCallbacks(timeout);
+            done.accept(null);
         }
     }
 
@@ -101,22 +144,10 @@ final class Locator {
                 o.put("prov", loc.getProvider());
             }
             if (error != null) o.put("error", error);
-            putBattery(c, o);
+            Battery.put(c, o);
             Remote.publish(c, o, null);
         } catch (Exception e) {
             Log.w(Policy.TAG, "loc reply: " + e);
         }
-    }
-
-    /** Adds {@code batt} (percent) and {@code chg} (charging) from the sticky battery broadcast. */
-    static void putBattery(Context c, JSONObject o) throws Exception {
-        Intent b = c.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-        if (b == null) return;
-        int level = b.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
-        int scale = b.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
-        if (level >= 0 && scale > 0) o.put("batt", level * 100 / scale);
-        int status = b.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
-        o.put("chg", status == BatteryManager.BATTERY_STATUS_CHARGING
-                || status == BatteryManager.BATTERY_STATUS_FULL);
     }
 }

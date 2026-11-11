@@ -9,14 +9,14 @@ if (signingFile.exists()) signingFile.withInputStream { signing.load(it) }
 
 android {
     namespace 'home.phonelock'
-    compileSdk 36
+    compileSdk 37
 
     defaultConfig {
         applicationId 'home.phonelock'
         minSdk 33
         targetSdk 36
-        versionCode 1
-        versionName '1.0'
+        versionCode rootProject.ext.gitVersionCode
+        versionName "1.0.${rootProject.ext.gitVersionCode}"
     }
 
     signingConfigs {
@@ -43,4 +43,11 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+// The lock app is plain Java. AGP 9 compiles Kotlin in every module and adds the Kotlin standard library
+// (2 MB), which this app never uses, so leave it out: smaller downloads for setup and self-updates.
+// Only the app's own classpaths: build tools such as lint still need it.
+configurations.matching { it.name.endsWith('RuntimeClasspath') || it.name.endsWith('CompileClasspath') }.configureEach {
+    exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib'
 }

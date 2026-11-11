@@ -2,7 +2,16 @@ pluginManagement {
     repositories { google(); mavenCentral(); gradlePluginPortal() }
 }
 dependencyResolutionManagement {
-    repositories { google(); mavenCentral() }
+    repositories {
+        google()
+        mavenCentral()
+        // JitPack builds packages straight from GitHub, so it is trusted for one package only: the SPAKE2
+        // implementation the parent app's tests compare ours against (test-only, never shipped).
+        exclusiveContent {
+            forRepository { maven { url 'https://jitpack.io' } }
+            filter { includeModule('com.github.Flyfish233', 'spake2-java') }
+        }
+    }
 }
 rootProject.name = "PhoneLock"
 include ':lock'

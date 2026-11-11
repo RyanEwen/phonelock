@@ -49,9 +49,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.util.Date
 
-/** Full-screen page with a back arrow and [title], used by Calls, Contacts and Files. */
+/** Full-screen page with a back arrow and [title], used by Calls, Contacts, Files and Location history. */
 @Composable
-private fun Page(title: String, onBack: () -> Unit, content: @Composable () -> Unit) {
+internal fun Page(title: String, onBack: () -> Unit, content: @Composable () -> Unit) {
     BackHandler(onBack = onBack)
     Column(Modifier.safeDrawingPadding().padding(16.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -122,12 +122,21 @@ internal fun CallsScreen(dev: String, state: PhoneState, onBack: () -> Unit) {
             CappedList(entries, key = dev, initial = 10) { c -> CallRow(c) }
         }
     }
+    val ctx = LocalContext.current
+    /** Adds to the safe list, or says it's already there (the same number in any format counts). */
+    fun addSafe(name: String, number: String) {
+        if (calls.isSafe(number)) {
+            android.widget.Toast.makeText(ctx, "$number is already on the safe list", android.widget.Toast.LENGTH_SHORT).show()
+        } else {
+            Hub.setCalls(dev, calls.withSafe(SafeEntry(name, number)))
+        }
+    }
     if (adding) NumberDialog("Add to safe list", onDismiss = { adding = false }) { name, number ->
-        Hub.setCalls(dev, calls.copy(safe = calls.safe + SafeEntry(name, number)))
+        addSafe(name, number)
         adding = false
     }
-    if (picking) ContactPicker(contacts[dev].orEmpty(), onDismiss = { picking = false }) { c, number ->
-        Hub.setCalls(dev, calls.copy(safe = calls.safe + SafeEntry(c.name, number)))
+    if (picking) ContactPicker(contacts[dev].orEmpty(), calls, onDismiss = { picking = false }) { c, number ->
+        addSafe(c.name, number)
         picking = false
     }
 }
@@ -184,15 +193,16 @@ private fun NumberDialog(title: String, onDismiss: () -> Unit, onSave: (String, 
 
 /** Picks one number of one of the device's contacts. */
 @Composable
-private fun ContactPicker(contacts: List<Contact>, onDismiss: () -> Unit, onPick: (Contact, String) -> Unit) {
+private fun ContactPicker(contacts: List<Contact>, calls: CallSettings, onDismiss: () -> Unit, onPick: (Contact, String) -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Choose a contact") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 if (contacts.isEmpty()) Text("Loading the device's contacts…")
+                // Each number once, whatever its format; numbers already on the safe list are left out.
                 contacts.forEach { c ->
-                    c.numbers.forEach { n ->
+                    c.distinctNumbers.filterNot(calls::isSafe).forEach { n ->
                         Column(Modifier.fillMaxWidth().clickable { onPick(c, n) }.padding(vertical = 8.dp)) {
                             Text(c.name, fontWeight = FontWeight.Medium)
                             Text(n, style = MaterialTheme.typography.bodySmall)
@@ -221,11 +231,11 @@ internal fun ContactsScreen(dev: String, state: PhoneState, onBack: () -> Unit) 
             if (contacts == null) Text("Loading…", style = MaterialTheme.typography.bodyMedium)
             else if (contacts.isEmpty()) Text("No contacts with phone numbers.", style = MaterialTheme.typography.bodyMedium)
             contacts.orEmpty().forEach { c ->
-                val safe = c.numbers.any { n -> state.calls.safe.any { it.number == n } }
+                val safe = c.numbers.any(state.calls::isSafe)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(c.name + if (safe) "  · safe" else "", fontWeight = FontWeight.Medium)
-                        Text(c.numbers.joinToString(", "), style = MaterialTheme.typography.bodySmall)
+                        Text(c.distinctNumbers.joinToString(", "), style = MaterialTheme.typography.bodySmall)
                     }
                     TextButton(onClick = { removing = c }) { Text("Remove") }
                 }

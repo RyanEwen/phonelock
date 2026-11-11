@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
@@ -11,6 +12,20 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <!-- Location log: a wake lock while a reading is taken, and the Wi-Fi network to skip readings when she hasn't moved. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Diagnostics and recovery debugging report the current network and address. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- The child's Wi-Fi & Bluetooth screen: join networks and pair accessories without Settings. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Granted once over adb at setup (pm grant): lets ScreenViewGuard switch screen view back on after
+         Android's privacy review turns it off. -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" tools:ignore="ProtectedPermissions" />
+    <!-- App use for the parents' timeline (usage access, granted once at setup). -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <!-- Calls, contacts and files for parents -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
@@ -19,6 +34,8 @@
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+    <!-- Self-update (installed silently as device owner) -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Ring the device -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -37,6 +54,7 @@
             android:lockTaskMode="if_whitelisted"
             android:excludeFromRecents="true"
             android:stateNotNeeded="true"
+            android:windowSoftInputMode="stateAlwaysHidden|adjustPan"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -84,6 +102,13 @@
         </service>
 
         <activity
+            android:name=".ConnectionsActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
             android:name=".RingActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
@@ -128,6 +153,11 @@
                 <action android:name="home.phonelock.UNINSTALL_RESULT" />
             </intent-filter>
         </receiver>
+
+        <receiver android:name=".Updater$Result" android:exported="false" />
+
+        <!-- The location log's 15-minute alarm. -->
+        <receiver android:name=".LocationLog$Tick" android:exported="false" />
 
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>

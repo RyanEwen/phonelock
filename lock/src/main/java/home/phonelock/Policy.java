@@ -65,6 +65,14 @@ public final class Policy {
             "com.android.inputmethod.latin",
     };
 
+    /**
+     * Never hidden from the system, but listed for parents like any other app, starting on the hidden list
+     * ({@link #notOffered}): a parent can show one and allow it for a while.
+     */
+    static final String[] HIDDEN_FROM_LIST_BY_DEFAULT = {
+            "com.android.settings",
+    };
+
     /** Never hidden even though they have a launcher icon (lock task still keeps them shut). */
     static final String[] NEVER_HIDE = {
             "com.android.settings",
@@ -119,6 +127,9 @@ public final class Policy {
             // The call log for parents; Android may refuse this one to a device owner (restricted).
             android.Manifest.permission.READ_CALL_LOG,
             android.Manifest.permission.READ_PHONE_STATE,
+            // The Wi-Fi & Bluetooth screen: find and pair accessories.
+            android.Manifest.permission.BLUETOOTH_SCAN,
+            android.Manifest.permission.BLUETOOTH_CONNECT,
     };
 
     /** Lifted while a parent has unlocked with the PIN. */
@@ -169,6 +180,7 @@ public final class Policy {
 
     /** Installed for this user, hidden or not. */
     static boolean isPresent(Context c, String pkg) {
+        if (BuiltInApps.is(pkg)) return true;
         try {
             ApplicationInfo ai = c.getPackageManager()
                     .getApplicationInfo(pkg, PackageManager.MATCH_UNINSTALLED_PACKAGES);
@@ -181,16 +193,33 @@ public final class Policy {
 
     /** Apps a parent took off the "Give access" list; the child can't ask for them either. */
     static Set<String> notOffered(Context c) {
-        Set<String> out = new LinkedHashSet<>();
-        for (String p : prefs(c).getString("not_offered", "").split(",")) if (!p.trim().isEmpty()) out.add(p.trim());
+        Set<String> out = new LinkedHashSet<>(csv(c, "not_offered"));
+        // Settings starts on the hidden list: a parent can show it to allow it for a while in an edge case
+        // (e.g. turning on USB debugging), without it ever being on offer to the child by default.
+        Set<String> shown = csv(c, "offered_defaults");
+        for (String p : HIDDEN_FROM_LIST_BY_DEFAULT) if (!shown.contains(p)) out.add(p);
         return out;
     }
 
     /** Adds {@code pkg} to, or removes it from, {@link #notOffered}. */
     static void setOffered(Context c, String pkg, boolean offered) {
-        Set<String> s = notOffered(c);
+        if (Arrays.asList(HIDDEN_FROM_LIST_BY_DEFAULT).contains(pkg)) {
+            // Hidden by default, so what's remembered is that a parent chose to show it.
+            Set<String> shown = csv(c, "offered_defaults");
+            if (offered) shown.add(pkg); else shown.remove(pkg);
+            prefs(c).edit().putString("offered_defaults", String.join(",", shown)).apply();
+            return;
+        }
+        Set<String> s = csv(c, "not_offered");
         if (offered) s.remove(pkg); else s.add(pkg);
         prefs(c).edit().putString("not_offered", String.join(",", s)).apply();
+    }
+
+    /** A comma-separated set of packages stored under {@code key}. */
+    private static Set<String> csv(Context c, String key) {
+        Set<String> out = new LinkedHashSet<>();
+        for (String p : prefs(c).getString(key, "").split(",")) if (!p.trim().isEmpty()) out.add(p.trim());
+        return out;
     }
 
     static Set<String> extraSupport(Context c) {
@@ -210,13 +239,45 @@ public final class Policy {
      */
     static void setParentMode(Context c, long untilMs) {
         prefs(c).edit().putLong("parent_until", untilMs).apply();
-        apply(c);
+        // In the background, like the home screen's own updates: a full apply can take seconds.
+        applySoon(c);
         c.startActivity(new Intent(c, HomeActivity.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 .putExtra("parent_changed", true));
     }
 
-    /** Re-apply everything. Call often. */
+    /** Runs [applySoon]'s updates one after another, off the main thread. */
+    private static final java.util.concurrent.ExecutorService APPLIER =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+    private static final java.util.concurrent.atomic.AtomicBoolean APPLY_QUEUED =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private static volatile long appliedAt;
+
+    /**
+     * Re-applies everything in the background, merging a burst of requests into one run. For the home
+     * screen: a full apply hides, shows and suspends many apps (slow), and every app it shows makes Android
+     * announce a package change, which used to trigger another apply on the main thread for each one and
+     * freeze the screen (e.g. when parent mode starts).
+     */
+    static void applySoon(Context c) {
+        Context app = c.getApplicationContext();
+        if (!APPLY_QUEUED.compareAndSet(false, true)) return;
+        APPLIER.execute(() -> {
+            APPLY_QUEUED.set(false);
+            try {
+                apply(app);
+            } catch (Exception e) {
+                Log.w(TAG, "apply: " + e);
+            }
+        });
+    }
+
+    /** True for a few seconds after an apply: package changes then are most likely our own doing. */
+    static boolean justApplied() {
+        return System.currentTimeMillis() - appliedAt < 3_000;
+    }
+
+    /** Re-apply everything. Call often (from the main thread, prefer [applySoon]). */
     static synchronized void apply(Context c) {
         if (!isOwner(c)) {
             Log.w(TAG, "not device owner; nothing applied");
@@ -226,12 +287,21 @@ public final class Policy {
         ComponentName a = admin(c);
         boolean parent = inParentMode(c);
 
-        // 1. Our activity is the only home screen.
-        IntentFilter home = new IntentFilter(Intent.ACTION_MAIN);
-        home.addCategory(Intent.CATEGORY_HOME);
-        home.addCategory(Intent.CATEGORY_DEFAULT);
-        dpm.clearPackagePersistentPreferredActivities(a, c.getPackageName());
-        dpm.addPersistentPreferredActivity(a, home, new ComponentName(c, HomeActivity.class));
+        // 1. Our activity is the only home screen. Only (re)registered when it isn't already: Android restarts
+        // the home screen when this changes, and doing it on every apply made the home screen flash grey and
+        // black in a loop during bursts of applies (parent mode starting).
+        ComponentName ours = new ComponentName(c, HomeActivity.class);
+        ResolveInfo current = c.getPackageManager().resolveActivity(
+                new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME), PackageManager.MATCH_DEFAULT_ONLY);
+        boolean isHome = current != null && current.activityInfo != null
+                && ours.equals(new ComponentName(current.activityInfo.packageName, current.activityInfo.name));
+        if (!isHome) {
+            IntentFilter home = new IntentFilter(Intent.ACTION_MAIN);
+            home.addCategory(Intent.CATEGORY_HOME);
+            home.addCategory(Intent.CATEGORY_DEFAULT);
+            dpm.clearPackagePersistentPreferredActivities(a, c.getPackageName());
+            dpm.addPersistentPreferredActivity(a, home, ours);
+        }
 
         // 2. Which packages may run inside the lock.
         Set<String> lockPkgs = new LinkedHashSet<>();
@@ -246,7 +316,8 @@ public final class Policy {
             lockPkgs.add("com.android.settings");
             lockPkgs.add("com.android.vending");
         }
-        dpm.setLockTaskPackages(a, lockPkgs.toArray(new String[0]));
+        // Wi-Fi and Bluetooth are screens of this app, not packages (see BuiltInApps).
+        dpm.setLockTaskPackages(a, lockPkgs.stream().filter(p -> !BuiltInApps.is(p)).toArray(String[]::new));
         dpm.setLockTaskFeatures(a,
                 DevicePolicyManager.LOCK_TASK_FEATURE_SYSTEM_INFO
                         | DevicePolicyManager.LOCK_TASK_FEATURE_NOTIFICATIONS
@@ -293,12 +364,15 @@ public final class Policy {
         Set<String> suspend = new LinkedHashSet<>();
         if (!parent) {
             for (String p : Schedule.masks(c).keySet()) {
-                if (!lockPkgs.contains(p) && !NEVER_SUSPEND.contains(p)) suspend.add(p);
+                if (!lockPkgs.contains(p) && !NEVER_SUSPEND.contains(p) && !BuiltInApps.is(p)) suspend.add(p);
             }
         }
         suspendApps(c, dpm, a, suspend);
 
         Log.i(TAG, "applied; parent=" + parent + " lockPkgs=" + lockPkgs);
+        // Parent mode may just have ended: screen view must be on again if it was switched off meanwhile.
+        ScreenViewGuard.check(c);
+        appliedAt = System.currentTimeMillis();
         // Let an open home screen redraw right away (new grant, schedule change) instead of on its next tick.
         c.sendBroadcast(new Intent(ACTION_CHANGED).setPackage(c.getPackageName()));
     }

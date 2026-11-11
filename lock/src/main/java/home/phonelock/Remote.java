@@ -289,6 +289,10 @@ public final class Remote {
                 sendState(c, false);
                 break;
             }
+            case "update":
+                // "Update now" from a parent: check, download and install when the screen is next off.
+                new Thread(() -> Updater.check(c, who), "update").start();
+                break;
             case "uninstall":
                 // Irreversible, so refused if it arrives late (like deleting files).
                 if (!recent(m)) break;
@@ -350,6 +354,36 @@ public final class Remote {
                 event(c, who + " changed the parent PIN", who, false);
                 break;
             }
+            case "battery": {
+                // Low-battery alert threshold, in percent (0 = off); shared by both parents.
+                int at = m.optInt("alert", Battery.DEFAULT_ALERT);
+                Battery.setAlertAt(c, at);
+                event(c, at == 0 ? who + " turned off low-battery alerts"
+                        : who + " set the low-battery alert to " + Battery.alertAt(c) + "%", who, false);
+                sendState(c, true);
+                break;
+            }
+            case "track":
+                // A parent's location history page asks for entries since its newest one.
+                LocationLog.sendHistory(c, m.optLong("since", 0), m.optString("id"));
+                break;
+            case "debug": {
+                // Recovery: USB and wireless debugging on for a while (0 turns them off). Only acted on
+                // promptly, like other operations that change what the device allows.
+                if (!recent(m)) break;
+                long mins = Math.max(0, Math.min(240, m.optLong("minutes", 60)));
+                if (mins == 0) {
+                    Debugging.disable(c);
+                    event(c, who + " turned debugging off", who, false);
+                } else {
+                    new Thread(() -> Debugging.enable(c, mins, who), "debug").start();
+                }
+                break;
+            }
+            case "diag":
+                // A parent's "Send diagnostics"; the reply goes only to that parent's app.
+                Diagnostics.send(c, m.optString("id"));
+                break;
             case "locate":
                 if (!live(m)) break;
                 Locator.locate(c, m.optString("id"));
@@ -497,6 +531,10 @@ public final class Remote {
             o.put("parent", Policy.inParentMode(c));
             o.put("parentUntil", Policy.inParentMode(c) ? Policy.prefs(c).getLong("parent_until", 0) : 0);
             o.put("ringing", Ringer.isRinging());
+            o.put("version", Updater.installedVersion(c));
+            Battery.put(c, o);
+            int ready = Updater.readyVersion(c);
+            if (ready > 0) o.put("updateReady", ready);
             o.put("mode", Schedule.modeName(Schedule.currentMode(c)));
             int manual = Schedule.overrideMode(c);
             if (manual != 0) {
@@ -524,6 +562,7 @@ public final class Remote {
                         .put("files", FileManager.permitted())
                         .put("calllog", CallLogFeed.permitted(c)));
                 o.put("schedule", Schedule.rulesJson(c));
+                o.put("battAlert", Battery.alertAt(c));
             }
             o.put("labels", labels);
             publish(c, o, null);
@@ -562,6 +601,8 @@ public final class Remote {
         Set<String> skip = new LinkedHashSet<>(Policy.visibleApps(c));
         skip.addAll(Arrays.asList(Policy.SUPPORT));
         skip.addAll(Arrays.asList(Policy.NEVER_HIDE));
+        // Except those listed for parents (starting on the hidden list), such as Settings.
+        skip.removeAll(Arrays.asList(Policy.HIDDEN_FROM_LIST_BY_DEFAULT));
         skip.add(c.getPackageName());
         Intent li = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
         Set<String> out = new LinkedHashSet<>();
@@ -569,10 +610,13 @@ public final class Remote {
             String p = ri.activityInfo.packageName;
             if (!skip.contains(p) && Policy.isPresent(c, p)) out.add(p);
         }
+        // Wi-Fi and Bluetooth are listed like apps (see BuiltInApps).
+        for (String id : BuiltInApps.ALL) if (!skip.contains(id)) out.add(id);
         return new ArrayList<>(out);
     }
 
     static String label(Context c, String pkg) {
+        if (BuiltInApps.is(pkg)) return BuiltInApps.label(pkg);
         try {
             ApplicationInfo ai = c.getPackageManager()
                     .getApplicationInfo(pkg, PackageManager.MATCH_UNINSTALLED_PACKAGES);
@@ -609,24 +653,45 @@ public final class Remote {
 
     static void publish(Context c, JSONObject o, String notifyText) {
         if (!paired(c)) return;
-        SENDER.execute(() -> {
-            try {
-                byte[] key = Crypto.key(secret(c));
-                String body = Crypto.seal(key, o.toString());
-                if (body.length() <= MAX_INLINE) {
-                    post(c, body.getBytes(StandardCharsets.US_ASCII), null, urgent(o));
-                } else {
-                    // ntfy turns bodies over 4 KB into files the apps wouldn't read, so send a small "big"
-                    // message carrying the real one as an encrypted attachment.
-                    JSONObject wrapper = msg("big");
-                    byte[] enc = Crypto.sealBytes(key, o.toString().getBytes(StandardCharsets.UTF_8),
-                            "phonelock/blob/" + wrapper.getString("id"));
-                    post(c, enc, Crypto.seal(key, wrapper.toString()), urgent(o));
-                }
-            } catch (Exception e) {
-                Log.w(Policy.TAG, "publish: " + e);
+        SENDER.execute(() -> send(c, o));
+    }
+
+    /**
+     * Publishes {@code o} and waits up to {@code timeoutMs} for the hub to accept it, for messages that
+     * must not be lost (see {@link Outbox}). Goes through the same sender thread, so ordering holds; never
+     * call it from that thread.
+     */
+    static boolean publishNow(Context c, JSONObject o, long timeoutMs) {
+        if (!paired(c)) return false;
+        java.util.concurrent.Future<Boolean> f = SENDER.submit(() -> send(c, o));
+        try {
+            return f.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            // Not started yet: don't send it late behind the caller's back (the caller retries).
+            f.cancel(false);
+            Log.w(Policy.TAG, "publish now: " + e);
+            return false;
+        }
+    }
+
+    /** Seals and posts {@code o}; true if the hub accepted it. Runs on the sender thread. */
+    private static boolean send(Context c, JSONObject o) {
+        try {
+            byte[] key = Crypto.key(secret(c));
+            String body = Crypto.seal(key, o.toString());
+            if (body.length() <= MAX_INLINE) {
+                return post(c, body.getBytes(StandardCharsets.US_ASCII), null, urgent(o));
             }
-        });
+            // ntfy turns bodies over 4 KB into files the apps wouldn't read, so send a small "big"
+            // message carrying the real one as an encrypted attachment.
+            JSONObject wrapper = msg("big");
+            byte[] enc = Crypto.sealBytes(key, o.toString().getBytes(StandardCharsets.UTF_8),
+                    "phonelock/blob/" + wrapper.getString("id"));
+            return post(c, enc, Crypto.seal(key, wrapper.toString()), urgent(o));
+        } catch (Exception e) {
+            Log.w(Policy.TAG, "publish: " + e);
+            return false;
+        }
     }
 
     /**
@@ -653,9 +718,9 @@ public final class Remote {
      * {@code body} is uploaded as an attachment and {@code messageHeader} becomes the message text.
      * {@code urgent} asks the hub for a high-priority push, which Android delivers even in deep sleep; used
      * only for things a parent should see promptly (it also caps how often Firebase allows it).
-     * Blocks; call off the main thread.
+     * Returns whether the hub accepted it. Blocks; call off the main thread.
      */
-    private static void post(Context c, byte[] body, String messageHeader, boolean urgent) throws Exception {
+    private static boolean post(Context c, byte[] body, String messageHeader, boolean urgent) throws Exception {
         HttpURLConnection h = (HttpURLConnection) new URL(
                 RemoteService.server(c) + "/" + RemoteService.topic(c)).openConnection();
         h.setRequestMethod(messageHeader == null ? "POST" : "PUT");
@@ -673,7 +738,11 @@ public final class Remote {
         }
         int code = h.getResponseCode();
         h.disconnect();
-        if (code < 200 || code > 299) Log.w(Policy.TAG, "ntfy publish HTTP " + code);
+        if (code < 200 || code > 299) {
+            Log.w(Policy.TAG, "ntfy publish HTTP " + code);
+            return false;
+        }
+        return true;
     }
 
     static void notifyKid(Context c, String text) {

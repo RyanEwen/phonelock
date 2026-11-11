@@ -29,6 +29,7 @@ Plaintext is JSON with common fields:
 | `appmode` | `app`, and either `mask` (bits: 1 normal, 2 limited hours, 4 bedtime; 0 = only by grant) or `set`/`clear` (bits changed against the device's current mask) | which situations an app is on the home screen in; non-zero adds it to the home list |
 | `schedule` | `rules` [{`mode` (`limited`/`bedtime`), `days` (bit 0 = Monday … bit 6 = Sunday), `start`, `end` (minutes after midnight; `end < start` runs past midnight, `end == start` is all day)}] | replaces the weekly schedule; bedtime wins over limited hours |
 | `mode` | `mode` (`limited` / `bedtime` / `none` to end), `minutes` (1–1440) | start limited hours or bedtime by hand until min(now, ts)+minutes; the stricter of it and the schedule applies (bedtime > limited > normal); accepted late while time remains |
+| `update` | | check for a lock app update now; a newer verified release installs the next time the screen is off (no call or ring); results as `event`s |
 | `uninstall` | `app` | uninstall a removable app (installed on the device, not built in, not the lock app); dropped if more than 30 minutes late; result reported as an `event` and a fresh `state` |
 | `offer` | `app`, `on` | put an app on (`true`) or take it off the grantable list; apps taken off also leave the kid's Ask picker; phone replies with `state` (`full`) |
 | `icons` | `apps` [pkg] | phone replies with `icons` (`req` = this message's `id`); parents ask only for icons they haven't cached |
@@ -39,6 +40,10 @@ Plaintext is JSON with common fields:
 | `parentmode` | `minutes` (0 ends it, up to 720) | parent mode on the device (Settings and Play Store) until then or until the screen turns off; dropped if more than 5 minutes late |
 | `pin` | `pin` (4–8 digits) | sets the parent PIN; never echoed or logged |
 | `locate` | | phone replies with `loc` (`req` = this message's `id`) |
+| `battery` | `alert` (percent, 0 = off, up to 50) | low-battery alert threshold, shared by all parents; phone replies with `state` (`full`) and an `event` |
+| `debug` | `minutes` (0 turns off, up to 240) | recovery: USB and wireless debugging on until then (needs WRITE_SECURE_SETTINGS, granted at setup); dropped if more than 30 minutes late; the reply `event` says where to connect |
+| `diag` | | phone replies with `diag` (`req` = this message's `id`); only the asking parent app shows it |
+| `track` | `since` (ms) | phone replies with `track` (`req` = this message's `id`) holding every location log entry still running at or after `since` |
 | `ring` | `op` (`start`/`stop`), `seconds`? (10–300, default 120) | ring at full alarm volume with a Stop screen; `start` while ringing extends it |
 | `screen` | | phone replies with `shot` (`req` = this message's `id`) and always shows the kid "<from> viewed your screen" |
 
@@ -48,10 +53,12 @@ Plaintext is JSON with common fields:
 
 | `t` | fields |
 |---|---|
-| `state` | `name`, `grants` {pkg: untilMs}, `blocks` {pkg: untilMs}, with `full`: `calls` {`limitOut`, `limitIn`, `safe`} and `can` {`files`, `calllog`}, `home` [pkg], `others` [pkg]?, `labels` {pkg: label}, `parent`, `parentUntil` (ms, 0 when off), `ringing`, `removable` [pkg]? (with `full`: apps that can be uninstalled), `notOffered` [pkg]? (with `full`: apps taken off the grantable list), `mode` (`normal`/`limited`/`bedtime`, schedule and manual combined), `modeUntil` (ms, 0 = no schedule), `manual` {`mode`, `until`}? (a situation started by hand), with `full`: `masks` {pkg: mask}, `schedule` [rule] |
-| `event` | `text` (human readable; e.g. "Dad: WhatsApp allowed until 6:00 PM", "Time's up: WhatsApp"), `by`? (the parent whose action it was), `quiet`? (routine; list only, no notification) |
+| `state` | `name`, `grants` {pkg: untilMs}, `blocks` {pkg: untilMs}, with `full`: `calls` {`limitOut`, `limitIn`, `safe`} and `can` {`files`, `calllog`}, `home` [pkg], `others` [pkg]?, `labels` {pkg: label}, `parent`, `parentUntil` (ms, 0 when off), `ringing`, `version` (lock app versionCode), `updateReady`? (downloaded version waiting for screen-off), `removable` [pkg]? (with `full`: apps that can be uninstalled), `notOffered` [pkg]? (with `full`: apps taken off the grantable list), `mode` (`normal`/`limited`/`bedtime`, schedule and manual combined), `modeUntil` (ms, 0 = no schedule), `manual` {`mode`, `until`}? (a situation started by hand), with `full`: `masks` {pkg: mask}, `schedule` [rule], `battAlert` (low-battery threshold %, 0 = off); always: `batt` (%), `chg` (charging) |
+| `event` | `text` (human readable; e.g. "Dad: WhatsApp allowed until 6:00 PM", "Time's up: WhatsApp"), `by`? (the parent whose action it was), `quiet`? (routine; list only, no notification). "Battery low: N%" and "Turned on" are kept and retried until sent (a late one says "(at 3:02 PM)"); "Turning off" is best effort, sent while the device shuts down |
 | `req` | `req` (id), `app`, `label`, `minutes`; kid tapped "Ask for an app" (rate-limited to 1/min) |
 | `loc` | `req`, `lat`, `lng`, `acc` (m), `fix` (ms), `prov`, `batt` (%), `chg`, `error`?; position fields are absent when no fix was available |
+| `track` | `points` [{`t` first seen ms, `to` last seen ms, `lat`, `lng`, `acc` m?, `batt`?, `chg`?}], `apps`? [{`app`, `label`, `t`, `to`}] (app use since the last send, sessions of a minute or more), `batt`, `chg`, `req`? (when answering a `track` request). The location log: sent every 15 minutes (a heartbeat even with no new points), entries are keyed by `t` and an entry seen again carries a later `to`. Kept 7 days on the phone; entries taken offline are sent once the hub accepts them (cursor advances only on HTTP 2xx) |
+| `diag` | `req`, `checks` [{`name`, `ok`? (absent = information), `value`?}], `log` (the lock app's recent log, up to 60 KB); the hub topic is masked in both, no keys, PIN or contacts |
 | `big` | none; its attachment is a whole message (JSON) too large for ntfy's 4 KB limit, handled as if received directly. Parents send `big` the same way (e.g. a long safe list) |
 | `calls` | `entries` [{`ts`, `number`, `name`, `type` (in/out/missed/rejected/blocked/voicemail), `dur` s}], `req`?, `error`?; sent on request and as new calls are logged |
 | `contacts` | `list` [{`key`, `name`, `numbers` [..]}], `req`, `error`? |

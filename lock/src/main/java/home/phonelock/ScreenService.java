@@ -105,6 +105,15 @@ public class ScreenService extends AccessibilityService {
     }
 
     /** Closes the notification shade if it's open (so the ring screen is visible). No-op if not enabled. */
+    /**
+     * Opens Android's own power menu (Power off, Restart, Emergency), as holding the power button does.
+     * False if the service isn't running (screen view switched off).
+     */
+    static boolean showPowerMenu() {
+        ScreenService s = instance;
+        return s != null && s.performGlobalAction(GLOBAL_ACTION_POWER_DIALOG);
+    }
+
     static void dismissShade() {
         ScreenService s = instance;
         if (s != null) s.performGlobalAction(GLOBAL_ACTION_DISMISS_NOTIFICATION_SHADE);

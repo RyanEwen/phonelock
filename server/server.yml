@@ -10,7 +10,9 @@ cache-duration: 24h
 attachment-cache-dir: /var/cache/ntfy/attachments
 # Files from parent file management go up to 50 MB (Cloudflare's upload cap is 100 MB).
 attachment-file-size-limit: 50M
-attachment-total-size-limit: 10G
+# The apps host's disk is shared with other services (29 GB free in Nov 2026); attachments expire in 3 h,
+# so a few GB is far more than a busy day needs.
+attachment-total-size-limit: 3G
 attachment-expiry-duration: 3h
 
 # Firebase Cloud Messaging (each message also goes to the FCM topic of the same name, so the parent app

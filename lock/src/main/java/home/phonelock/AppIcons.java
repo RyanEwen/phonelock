@@ -38,6 +38,10 @@ final class AppIcons {
                 PackageManager pm = c.getPackageManager();
                 for (int i = 0; i < apps.length() && i < MAX_APPS; i++) {
                     String pkg = apps.optString(i);
+                    if (BuiltInApps.is(pkg)) {
+                        icons.put(pkg, Base64.encodeToString(encode(BuiltInApps.icon(c, pkg)), Base64.NO_WRAP));
+                        continue;
+                    }
                     try {
                         Drawable d = pm.getApplicationIcon(
                                 pm.getApplicationInfo(pkg, PackageManager.MATCH_UNINSTALLED_PACKAGES));

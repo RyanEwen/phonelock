@@ -96,7 +96,7 @@ fun modeLabel(mode: String) = when (mode) {
 }
 
 /** "normal hours", "limited hours", "bedtime" for one situation bit, for messages. */
-private fun situationName(bit: Int) = when (bit) {
+internal fun situationName(bit: Int) = when (bit) {
     MODE_BEDTIME -> "bedtime"
     MODE_LIMITED -> "limited hours"
     else -> "normal hours"
@@ -138,7 +138,7 @@ internal fun AppTableSection(dev: String, state: PhoneState) {
             dismissButton = { TextButton(onClick = { uninstalling = null }) { Text("Cancel") } })
     }
     // Every app on the device, Phone first and then A to Z, ticked or not.
-    val rows = phoneFirst(state, state.home + state.others)
+    val rows = phoneFirst(state, appsOnly((state.home + state.others).distinct()))
     Section("Apps and when they're allowed") {
         if (!state.full) Text("Loading the device's settings… Changes are possible once they arrive.",
             style = MaterialTheme.typography.bodySmall)
@@ -173,11 +173,12 @@ internal fun AppTableSection(dev: String, state: PhoneState) {
             }
         }
         // Hidden apps live here only to be brought back.
-        if (state.notOffered.isNotEmpty()) {
+        val hidden = appsOnly(state.notOffered)
+        if (hidden.isNotEmpty()) {
             TextButton(onClick = { showHidden = !showHidden }) {
-                Text(if (showHidden) "Hide the hidden apps" else "Hidden apps (${state.notOffered.size})")
+                Text(if (showHidden) "Hide the hidden apps" else "Hidden apps (${hidden.size})")
             }
-            if (showHidden) phoneFirst(state, state.notOffered).forEach { p ->
+            if (showHidden) phoneFirst(state, hidden).forEach { p ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     AppName(dev, p, state.label(p), Modifier.weight(1f))
                     TextButton(enabled = state.full, onClick = {

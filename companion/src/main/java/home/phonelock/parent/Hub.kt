@@ -45,6 +45,9 @@ data class PhoneState(
     val schedule: List<ScheduleRule> = emptyList(),
     /** Normally allowed apps a parent blocked for a while: package -> end time. */
     val blocks: Map<String, Long> = emptyMap(),
+    /** The lock app's version on the device, and a newer one downloaded and waiting to install (0 if none). */
+    val version: Int = 0,
+    val updateReady: Int = 0,
     /** A situation started by hand ("limited" / "bedtime") and when it ends; empty when none. */
     val manualMode: String = "",
     val manualUntil: Long = 0,
@@ -57,11 +60,22 @@ data class PhoneState(
     /** What the device has allowed the lock app: file access, reading its call log. */
     val canFiles: Boolean = false,
     val canCallLog: Boolean = false,
+    /** Low-battery alert threshold in percent (0 = off, -1 = not reported yet); from a full state. */
+    val battAlert: Int = -1,
     /** True once a full state (with app lists, table and schedule) has arrived; editing waits for it. */
     val full: Boolean = false,
 ) {
     fun label(pkg: String) = labels[pkg] ?: pkg
 }
+
+/**
+ * What the device last said about itself, from any of its messages: when it was last heard from ([seen],
+ * its own clock), its battery level ([battery] -1 if unknown) as of [batteryAt], and when a live message
+ * last arrived here ([heard], this phone's clock; compared with when this app asked, so a device clock
+ * that runs a little behind can't make a reply look older than the question).
+ */
+data class Vitals(val seen: Long = 0, val battery: Int = -1, val charging: Boolean = false, val batteryAt: Long = 0,
+                  val heard: Long = 0)
 
 data class Request(val device: String, val req: String, val app: String, val label: String,
                    val minutes: Long, val ts: Long)
@@ -74,6 +88,8 @@ class App : Application() {
         AppIconCache.init(this)
         PhoneTools.init(this)
         DeviceData.init(this)
+        LocationHistory.init(this)
+        ChildSetup.init(this)
         Push.init(this)
         Push.sync(Hub.devices.value)
     }
@@ -95,6 +111,11 @@ object Hub {
     private val _events = MutableStateFlow<Map<String, List<Event>>>(emptyMap())
     val events: StateFlow<Map<String, List<Event>>> = _events.asStateFlow()
     val connected = MutableStateFlow(false)
+    private val _vitals = MutableStateFlow<Map<String, Vitals>>(emptyMap())
+    val vitals: StateFlow<Map<String, Vitals>> = _vitals.asStateFlow()
+    /** When this app last asked each device for its state, to notice a device that doesn't answer. */
+    private val _askedAt = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val askedAt: StateFlow<Map<String, Long>> = _askedAt.asStateFlow()
 
     private val sentIds = ArrayDeque<String>()
     /** Seen message ids with their timestamps, persisted; kept for [MAX_AGE_MS]. */
@@ -135,6 +156,17 @@ object Hub {
             runCatching {
                 val o = JSONObject(s)
                 _states.value = o.keys().asSequence().associateWith { parseState(o.getJSONObject(it)) }
+            }
+        }
+        prefs.getString("vitals", null)?.let { s ->
+            runCatching {
+                val o = JSONObject(s)
+                _vitals.value = o.keys().asSequence().associateWith { k ->
+                    o.getJSONObject(k).let {
+                        Vitals(it.optLong("seen"), it.optInt("battery", -1), it.optBoolean("charging"), it.optLong("batteryAt"),
+                            it.optLong("heard"))
+                    }
+                }
             }
         }
         prefs.getString("requests", null)?.let { s ->
@@ -199,8 +231,15 @@ object Hub {
         _devices.update { l -> l.filterNot { it.id == id } }
         _states.update { it - id }
         _events.update { it - id }
+        _vitals.update { it - id }
+        // Everything kept about the device goes with it (the privacy policy promises this).
+        LocationHistory.forget(id)
+        DeviceData.forget(id)
+        AppIconCache.forget(id)
+        PhoneTools.forget(id)
+        Diagnostics.forget(id)
         _requests.update { l -> l.filterNot { it.device == id } }
-        saveDevices(); saveStates(); saveEvents(); saveRequests()
+        saveDevices(); saveStates(); saveEvents(); saveRequests(); saveVitals()
         if (_devices.value.isEmpty()) ParentService.stop(app) else ParentService.restart(app)
     }
 
@@ -236,7 +275,16 @@ object Hub {
         val s = _states.value[d.id]
         if (s == null || !s.full || System.currentTimeMillis() - s.updated > maxAgeMs) refresh(d.id)
     }
-    fun refresh(dev: String, full: Boolean = true) = send(dev, msg("status").put("full", full))
+    fun refresh(dev: String, full: Boolean = true) {
+        _askedAt.update { it + (dev to System.currentTimeMillis()) }
+        send(dev, msg("status").put("full", full))
+    }
+
+    /** Sets [dev]'s low-battery alert to [percent] (0 turns it off); shared by every parent of the device. */
+    fun setBatteryAlert(dev: String, percent: Int) {
+        editState(dev) { it.copy(battAlert = percent) }
+        send(dev, msg("battery").put("alert", percent))
+    }
 
     fun grant(dev: String, app: String, minutes: Long, req: String? = null) {
         send(dev, msg("grant").put("app", app).put("minutes", minutes).apply { req?.let { put("req", it) } })
@@ -322,6 +370,15 @@ object Hub {
         send(dev, msg("mode").put("mode", "none"))
     }
 
+    /**
+     * Recovery: turns USB and wireless debugging on on [dev] for [minutes] (0 turns them off), so it can be
+     * repaired or updated over adb even if its screens can't be used. The device reports where to connect.
+     */
+    fun debugging(dev: String, minutes: Long) = send(dev, msg("debug").put("minutes", minutes))
+
+    /** Asks [dev] to check for a lock app update now; it installs the next time the screen is off. */
+    fun updateNow(dev: String) = send(dev, msg("update"))
+
     /** Uninstalls [app] from [dev] (removes it and its data; only for apps the device reports removable). */
     fun uninstall(dev: String, app: String) = send(dev, msg("uninstall").put("app", app))
 
@@ -400,16 +457,31 @@ object Hub {
         if (ts <= 0 || System.currentTimeMillis() - ts > MAX_AGE_MS) return
         if (!markSeen(id, ts)) return
         val dev = d.id
+        if (from == "phone") noteVitals(dev, m, ts)
         when (m.optString("t")) {
             "state" -> if (from == "phone") {
                 val s = parseState(m)
                 val old = _states.value[dev]
                 // States can arrive out of order (a full one travels as a slower attachment): keep the newest.
-                if (old != null && s.updated < old.updated) return
+                // An older full state still brings what partial ones lack (app list, schedule…), so take those
+                // parts from it rather than dropping it.
+                if (old != null && s.updated < old.updated) {
+                    if (s.full) {
+                        _states.update { it + (dev to old.copy(others = s.others.filterNot { p -> p in old.home },
+                            notOffered = s.notOffered, labels = s.labels + old.labels, masks = s.masks,
+                            schedule = s.schedule, calls = s.calls, canFiles = s.canFiles, canCallLog = s.canCallLog,
+                            removable = s.removable, battAlert = s.battAlert, full = true)) }
+                        saveStates()
+                    }
+                    return
+                }
                 val merged = if (s.full || old == null) s
-                    else s.copy(others = old.others, notOffered = old.notOffered, labels = old.labels + s.labels,
+                    // A partial state carries the home list but not the others: keep the previous others, minus
+                    // anything now on the home list, so an app can't be in both (and listed twice).
+                    else s.copy(others = old.others.filterNot { it in s.home }, notOffered = old.notOffered, labels = old.labels + s.labels,
                         masks = old.masks, schedule = old.schedule, full = old.full, calls = old.calls,
-                        canFiles = old.canFiles, canCallLog = old.canCallLog, removable = old.removable)
+                        canFiles = old.canFiles, canCallLog = old.canCallLog, removable = old.removable,
+                        battAlert = old.battAlert)
                 _states.update { it + (dev to merged) }
                 saveStates()
                 AppIconCache.ensure(d, merged.home + merged.others + merged.notOffered + merged.grants.keys)
@@ -444,6 +516,8 @@ object Hub {
                     ?.let { dispatch(d, it, null) }
             }
             "loc", "shot" -> if (from == "phone") PhoneTools.handle(d, m, attachmentUrl)
+            "track" -> if (from == "phone") LocationHistory.handle(dev, m)
+            "diag" -> if (from == "phone") Diagnostics.handle(dev, m)
             "icons" -> if (from == "phone") AppIconCache.handle(d, m, attachmentUrl)
             "calls", "contacts", "files", "file" -> if (from == "phone") DeviceData.handle(d, m, attachmentUrl)
             // Another parent answered a request.
@@ -464,6 +538,8 @@ object Hub {
             m.optJSONObject("masks")?.let { o -> o.keys().asSequence().associateWith { o.getInt(it) } } ?: emptyMap(),
             ScheduleRule.listFrom(m.optJSONArray("schedule")),
             m.optJSONObject("blocks")?.let { o -> o.keys().asSequence().associateWith { o.getLong(it) } } ?: emptyMap(),
+            m.optInt("version"),
+            m.optInt("updateReady"),
             m.optJSONObject("manual")?.optString("mode") ?: "",
             m.optJSONObject("manual")?.optLong("until") ?: 0,
             arr("removable").toSet(),
@@ -471,6 +547,7 @@ object Hub {
             CallSettings.from(m.optJSONObject("calls")),
             m.optJSONObject("can")?.optBoolean("files") ?: false,
             m.optJSONObject("can")?.optBoolean("calllog") ?: false,
+            m.optInt("battAlert", -1),
             m.has("others") || m.optBoolean("full"))
     }
 
@@ -481,14 +558,45 @@ object Hub {
         .put("notOffered", JSONArray(s.notOffered))
         .put("mode", s.mode).put("modeUntil", s.modeUntil)
         .put("masks", JSONObject(s.masks as Map<*, *>)).put("schedule", ScheduleRule.toJson(s.schedule))
-        .put("blocks", JSONObject(s.blocks as Map<*, *>)).put("manual", JSONObject().put("mode", s.manualMode).put("until", s.manualUntil))
+        .put("blocks", JSONObject(s.blocks as Map<*, *>)).put("version", s.version).put("updateReady", s.updateReady)
+        .put("manual", JSONObject().put("mode", s.manualMode).put("until", s.manualUntil))
         .put("removable", JSONArray(s.removable.toList())).put("parentUntil", s.parentUntil).put("calls", s.calls.toJson())
-        .put("can", JSONObject().put("files", s.canFiles).put("calllog", s.canCallLog)).put("full", s.full)
+        .put("can", JSONObject().put("files", s.canFiles).put("calllog", s.canCallLog))
+        .put("battAlert", s.battAlert).put("full", s.full)
 
     private fun saveStates() {
         val o = JSONObject()
         _states.value.forEach { (k, v) -> o.put(k, stateJson(v)) }
         prefs.edit().putString("states", o.toString()).apply()
+    }
+
+    /**
+     * Any message from the device proves it was reachable at [ts], and most carry its battery level: keep
+     * the newest of each, for the header's "seen 3 min ago · 54%".
+     */
+    private fun noteVitals(dev: String, m: JSONObject, ts: Long) {
+        val now = System.currentTimeMillis()
+        _vitals.update { all ->
+            val v = all[dev] ?: Vitals()
+            var next = if (ts > v.seen) v.copy(seen = ts) else v
+            // An answer is a new message at least as recent as anything heard before, timed by this phone's clock
+            // when it arrives (the device's own clock may be off). Replays were already dropped as seen.
+            if (ts >= v.seen) next = next.copy(heard = now)
+            if (m.has("batt") && ts >= v.batteryAt) {
+                next = next.copy(battery = m.optInt("batt", -1), charging = m.optBoolean("chg"), batteryAt = ts)
+            }
+            all + (dev to next)
+        }
+        saveVitals()
+    }
+
+    private fun saveVitals() {
+        val o = JSONObject()
+        _vitals.value.forEach { (k, v) ->
+            o.put(k, JSONObject().put("seen", v.seen).put("battery", v.battery).put("charging", v.charging)
+                .put("batteryAt", v.batteryAt).put("heard", v.heard))
+        }
+        prefs.edit().putString("vitals", o.toString()).apply()
     }
 
     private fun resolve(req: String) {

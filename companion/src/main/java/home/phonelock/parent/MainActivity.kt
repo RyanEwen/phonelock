@@ -15,6 +15,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -50,6 +51,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -61,6 +63,7 @@ import kotlinx.coroutines.delay
 import java.util.Date
 
 private const val INTENT_USED = "intent_used"
+private const val SELECTED = "selected_device"
 
 class MainActivity : ComponentActivity() {
     private val pendingLink = mutableStateOf<String?>(null)
@@ -70,6 +73,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // A recreated activity still carries its original intent; read it only if it wasn't used yet.
         if (savedInstanceState?.getBoolean(INTENT_USED) != true) readIntent(intent)
+        savedInstanceState?.getString(SELECTED)?.let { selected.value = it }
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
@@ -79,10 +83,14 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)) {
                 Surface(Modifier.fillMaxSize()) { Box(Modifier.fillMaxSize()) {
                     val devices by Hub.devices.collectAsState()
-                    var adding by remember { mutableStateOf(false) }
+                    var adding by rememberSaveable { mutableStateOf(false) }
                     val link by pendingLink
-                    if (devices.isEmpty() || adding || link != null) {
-                        AddPhoneScreen(link, canCancel = devices.isNotEmpty()) { added ->
+                    // Shown until accepted, also to parents already using the app when the disclosure changes.
+                    var disclosed by remember { mutableStateOf(Disclosure.accepted(ctx)) }
+                    if (!disclosed) {
+                        DisclosureScreen { disclosed = true }
+                    } else if (devices.isEmpty() || adding || link != null) {
+                        AddDeviceScreen(link, canCancel = devices.isNotEmpty()) { added ->
                             pendingLink.value = null
                             adding = false
                             if (added != null) selected.value = added
@@ -107,6 +115,8 @@ class MainActivity : ComponentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putBoolean(INTENT_USED, true)
+        // Rotating or unfolding recreates the activity: stay on the same child's device.
+        outState.putString(SELECTED, selected.value)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -118,67 +128,6 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         Hub.refreshStale()
         Push.catchUp()
-    }
-}
-
-@Composable
-private fun AddPhoneScreen(initialLink: String?, canCancel: Boolean, done: (String?) -> Unit) {
-    var link by remember { mutableStateOf(initialLink ?: "") }
-    var scanning by remember { mutableStateOf(false) }
-    val parentName by Hub.parentName.collectAsState()
-    var you by remember { mutableStateOf(parentName) }
-    val parsed = Hub.parsePairing(link)
-    var phoneName by remember(parsed?.topic) { mutableStateOf(parsed?.name ?: "") }
-
-    var settingUp by remember { mutableStateOf(false) }
-
-    if (scanning) {
-        BackHandler { scanning = false }
-        QrScanner(onResult = { link = it; scanning = false }, onCancel = { scanning = false })
-        return
-    }
-    if (settingUp) {
-        SetupPhoneScreen { added -> settingUp = false; if (added != null) done(added) }
-        return
-    }
-    if (canCancel) BackHandler { done(null) }
-    Column(Modifier.safeDrawingPadding().padding(20.dp).verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("Add a child's device", style = MaterialTheme.typography.headlineSmall)
-        Text("Connect this app to your child's phone or tablet so you can answer requests, give access and find it.")
-        Section("New device") {
-            Text("Set it up from scratch with a QR code. This erases the device.")
-            Button(onClick = { settingUp = true }) { Text("Set up a new device") }
-        }
-        Text("Add a device that's already set up", style = MaterialTheme.typography.titleMedium)
-        Text("Scan the pairing code from the other parent's app (device settings > Share with another " +
-            "parent), or paste a pairing link.")
-        Button(onClick = { scanning = true }) { Text("Scan QR code") }
-        OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth(), label = { Text("Pairing link") },
-            isError = link.isNotBlank() && parsed == null,
-            supportingText = {
-                Text(when {
-                    parsed != null -> "Pairing code recognised"
-                    link.isNotBlank() -> "This isn't a PhoneLock pairing link"
-                    else -> "Starts with phonelock://pair"
-                })
-            })
-        if (parsed != null) OutlinedTextField(phoneName, { phoneName = it }, Modifier.fillMaxWidth(),
-            label = { Text("Child's device name") }, singleLine = true,
-            supportingText = { Text("What this app calls their device, e.g. their first name") })
-        OutlinedTextField(you, { you = it }, Modifier.fillMaxWidth(),
-            label = { Text("Your name") }, singleLine = true,
-            supportingText = { Text("Shown on their device, e.g. \"${you.ifBlank { "Dad" }} allowed Camera\"") })
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
-                parsed?.let {
-                    Hub.setParentName(you)
-                    Hub.addDevice(it.copy(name = phoneName.ifBlank { it.name }))
-                    done(it.id)
-                }
-            }, enabled = parsed != null && you.isNotBlank()) { Text("Add device") }
-            if (canCancel) TextButton(onClick = { done(null) }) { Text("Cancel") }
-        }
     }
 }
 
@@ -197,15 +146,26 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
     LaunchedEffect(Unit) { while (true) { delay(15_000); now = System.currentTimeMillis() } }
     var menu by remember { mutableStateOf(false) }
     // Calls, Contacts or Files open as their own page over the main screen.
-    var page by remember(dev) { mutableStateOf<String?>(null) }
+    var page by rememberSaveable(dev) { mutableStateOf<String?>(null) }
     var startingMode by remember(dev) { mutableStateOf(false) }
     when (page) {
         "calls" -> { CallsScreen(dev, state) { page = null }; return }
         "contacts" -> { ContactsScreen(dev, state) { page = null }; return }
         "files" -> { FilesScreen(dev, state) { page = null }; return }
+        "history" -> { LocationHistoryScreen(dev, name) { page = null }; return }
+        "diag" -> { DiagnosticsScreen(dev, name) { page = null }; return }
+        "fixsetup" -> {
+            WifiSetupScreen(existing = devices.firstOrNull { it.id == dev }) { page = null }
+            return
+        }
     }
 
-    Column(Modifier.safeDrawingPadding().padding(16.dp).verticalScroll(rememberScrollState()),
+    // Wide screens (tablets, unfolded foldables, landscape) put the full app list in its own column on the
+    // right; narrow ones show everything in one column.
+    BoxWithConstraints(Modifier.safeDrawingPadding()) {
+    val wide = maxWidth >= 840.dp || (maxWidth >= 600.dp && maxWidth > maxHeight)
+    Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+    Column(Modifier.weight(1f).padding(16.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically) {
@@ -217,7 +177,16 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
             TextButton(onClick = onAdd) { Text("+ Add device") }
         }
         val device = devices.firstOrNull { it.id == dev }
-        PhoneHeader(name, state, connected || (device != null && Push.covers(device)), now, onRefresh = { Hub.refresh(dev) }, onMenu = { menu = true },
+        val vitals by Hub.vitals.collectAsState()
+        val askedAt by Hub.askedAt.collectAsState()
+        // After a refresh, re-check once the no-answer wait has passed, rather than on the next 15 s tick.
+        LaunchedEffect(askedAt[dev]) {
+            now = System.currentTimeMillis()
+            delay(21_000)
+            now = System.currentTimeMillis()
+        }
+        PhoneHeader(name, state, vitals[dev] ?: Vitals(), askedAt[dev] ?: 0L,
+            connected || (device != null && Push.covers(device)), now, onRefresh = { Hub.refresh(dev) }, onMenu = { menu = true },
             onLockNow = { Hub.parentMode(dev, 0) },
             onStartMode = { startingMode = true }, onEndMode = { Hub.endMode(dev) })
         if (startingMode) StartModeDialog(name, onPick = { mode, mins -> Hub.startMode(dev, mode, mins); startingMode = false },
@@ -246,7 +215,10 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
 
         AllowedNowSection(dev, state, now)
         NotAllowedNowSection(dev, state)
-        AppTableSection(dev, state)
+        if (!wide) {
+            AppTableSection(dev, state)
+            DeviceControlsSection(dev, state)
+        }
         ScheduleSection(dev, state)
 
         if (events.isNotEmpty()) Section("Activity") {
@@ -259,18 +231,28 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
             }
         }
     }
+    if (wide) Column(Modifier.weight(1f).padding(16.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        AppTableSection(dev, state)
+        DeviceControlsSection(dev, state)
+    }
+    }
+    }
 
-    if (menu) PhoneMenu(dev, name) { menu = false }
+    if (menu) PhoneMenu(dev, name, onOpen = { page = it }) { menu = false }
 }
 
 @Composable
-private fun PhoneMenu(dev: String, name: String, close: () -> Unit) {
+private fun PhoneMenu(dev: String, name: String, onOpen: (String) -> Unit, close: () -> Unit) {
     var rename by remember { mutableStateOf(name) }
     var you by remember { mutableStateOf(Hub.parentName.value) }
     var confirmRemove by remember { mutableStateOf(false) }
     var sharing by remember { mutableStateOf(false) }
     var parentMode by remember { mutableStateOf(false) }
     var changingPin by remember { mutableStateOf(false) }
+    var recovery by remember { mutableStateOf(false) }
+    if (recovery) DebuggingDialog(name, onPick = { Hub.debugging(dev, it); recovery = false; close() },
+        onDismiss = { recovery = false })
     if (parentMode) ParentModeDialog(name, onPick = { Hub.parentMode(dev, it); parentMode = false; close() },
         onDismiss = { parentMode = false })
     if (changingPin) PinDialog(onSave = { Hub.setPin(dev, it); changingPin = false; close() },
@@ -279,11 +261,22 @@ private fun PhoneMenu(dev: String, name: String, close: () -> Unit) {
         onDismissRequest = close,
         title = { Text("Settings") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(rename, { rename = it }, label = { Text("Child's device name") }, singleLine = true)
                 OutlinedTextField(you, { you = it }, label = { Text("Your name") }, singleLine = true,
                     supportingText = { Text("Shown on their device") })
                 TextButton(onClick = { parentMode = true }) { Text("Parent mode…") }
+                // Lock app version on the device, and its self-update.
+                val st = Hub.states.collectAsState().value[dev]
+                Text(buildString {
+                    append("Lock app version ${st?.version?.takeIf { it > 0 } ?: "unknown"}")
+                    st?.updateReady?.takeIf { it > 0 }?.let { append(" · version $it installs when the screen is next off") }
+                }, style = MaterialTheme.typography.bodySmall)
+                TextButton(onClick = { Hub.updateNow(dev); close() }) { Text("Check for update now") }
+                TextButton(onClick = { close(); onOpen("diag") }) { Text("Diagnostics…") }
+                TextButton(onClick = { close(); onOpen("fixsetup") }) { Text("Fix setup over Wi-Fi…") }
+                TextButton(onClick = { recovery = true }) { Text("Recovery: turn on debugging…") }
+                BatteryAlertSetting(dev, st)
                 TextButton(onClick = { changingPin = true }) { Text("Change parent PIN…") }
                 TextButton(onClick = { sharing = true }) { Text("Share with another parent…") }
                 TextButton(onClick = { confirmRemove = true }) { Text("Remove this device…") }

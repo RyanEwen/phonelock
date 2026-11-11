@@ -1,5 +1,12 @@
 plugins {
-    id 'com.android.application' version '8.10.1' apply false
-    id 'org.jetbrains.kotlin.android' version '2.1.21' apply false
-    id 'org.jetbrains.kotlin.plugin.compose' version '2.1.21' apply false
+    id 'com.android.application' version '9.5.1' apply false
+    id 'org.jetbrains.kotlin.plugin.compose' version '2.4.21' apply false
 }
+
+// One version scale for both apps, local builds and releases: the number of commits on this branch.
+// Updates (the lock app's self-update, Play for the parent app) need it to grow with every release.
+// Never rewrite or squash pushed history: a lower count would block all future updates (no downgrades).
+// (Gradle 9 removed project.exec; providers.exec is its replacement.)
+ext.gitVersionCode = providers.exec {
+    commandLine 'git', 'rev-list', '--count', 'HEAD'
+}.standardOutput.asText.get().trim().toInteger()

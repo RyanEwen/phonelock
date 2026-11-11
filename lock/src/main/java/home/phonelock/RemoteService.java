@@ -30,6 +30,9 @@ import java.util.TreeSet;
 public class RemoteService extends Service {
     static final String REPLY_PREFIX = "phone:";
     private volatile boolean running;
+    private android.content.BroadcastReceiver screenOff, battery, shutdown;
+    /** Receives location fixes other apps request, for the location log (costs no battery itself). */
+    private android.location.LocationListener passive;
     private Thread listener, timer;
     private volatile HttpURLConnection conn;
 
@@ -59,6 +62,35 @@ public class RemoteService extends Service {
         startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         getMainExecutor().execute(() -> Ringer.recover(this));
         CallLogFeed.watch(this);
+        ScreenViewGuard.watch(this);
+        BuiltInApps.addOnce(this);
+        if (screenOff == null) {
+            // A downloaded update installs when the screen turns off, never while she's using the device.
+            screenOff = new android.content.BroadcastReceiver() {
+                @Override public void onReceive(Context c, Intent i) {
+                    new Thread(() -> Updater.installIfIdle(c), "update").start();
+                }
+            };
+            registerReceiver(screenOff, new android.content.IntentFilter(Intent.ACTION_SCREEN_OFF), Context.RECEIVER_EXPORTED);
+        }
+        if (battery == null) {
+            // Low-battery alert and the "Turning off" notice (see Battery); both need a registered receiver.
+            battery = Battery.watch(this);
+            shutdown = Battery.watchShutdown(this);
+        }
+        if (passive == null) {
+            passive = loc -> new Thread(() -> LocationLog.recordPassive(this, loc), "passive").start();
+            try {
+                getSystemService(android.location.LocationManager.class).requestLocationUpdates(
+                        android.location.LocationManager.PASSIVE_PROVIDER, 60_000, 50f, passive, android.os.Looper.getMainLooper());
+            } catch (SecurityException e) {
+                Log.w(Policy.TAG, "passive location: " + e);
+                passive = null;
+            }
+        }
+        // The 15-minute location log, and anything still waiting to be sent from before.
+        LocationLog.schedule(this);
+        Outbox.flush(this);
         if (!running) {
             running = true;
             listener = new Thread(this::listenLoop, "ntfy");
@@ -72,6 +104,20 @@ public class RemoteService extends Service {
     @Override
     public void onDestroy() {
         running = false;
+        if (screenOff != null) {
+            unregisterReceiver(screenOff);
+            screenOff = null;
+        }
+        if (passive != null) {
+            getSystemService(android.location.LocationManager.class).removeUpdates(passive);
+            passive = null;
+        }
+        if (battery != null) {
+            unregisterReceiver(battery);
+            unregisterReceiver(shutdown);
+            battery = null;
+            shutdown = null;
+        }
         HttpURLConnection c = conn;
         if (c != null) c.disconnect();
         if (listener != null) listener.interrupt();
@@ -100,6 +146,9 @@ public class RemoteService extends Service {
         int lastMode = Schedule.currentMode(this);
         while (running) {
             try { Thread.sleep(20_000); } catch (InterruptedException e) { if (!running) return; }
+            // A few times a day, look for a lock app update (on its own thread: a download can take a while).
+            if (Updater.checkDue(this)) new Thread(() -> Updater.check(this, null), "update").start();
+            Debugging.expireIfDue(this);
             int mode = Schedule.currentMode(this);
             if (mode != lastMode) {
                 lastMode = mode;
@@ -195,11 +244,17 @@ public class RemoteService extends Service {
                 try (BufferedReader r = new BufferedReader(
                         new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8))) {
                     backoff = 2_000;
+                    Policy.prefs(this).edit().putLong("hub_connected_at", System.currentTimeMillis())
+                            .remove("hub_error").apply();
+                    // Connected again: send what was kept while offline (alerts, location readings).
+                    Outbox.flush(this);
                     String line;
                     while (running && (line = r.readLine()) != null) handle(line);
                 }
             } catch (Exception e) {
                 Log.w(Policy.TAG, "ntfy: " + e);
+                // Kept for diagnostics: why the device last lost (or couldn't get) the hub connection.
+                Policy.prefs(this).edit().putString("hub_error", e.getClass().getSimpleName() + ": " + e.getMessage()).apply();
             }
             sleep(backoff);
             backoff = Math.min(backoff * 2, 120_000);

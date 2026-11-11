@@ -15,5 +15,5 @@ if [ ! -f secrets/phonelock.keystore ]; then
     -alias phonelock -keyalg RSA -keysize 2048 -validity 36500 -dname "CN=PhoneLock" >/dev/null
   (umask 077; printf 'storePassword=%s\nkeyPassword=%s\n' "$pw" "$pw" > secrets/signing.properties)
 fi
-"$HOME/tools/gradle-8.11.1/bin/gradle" --no-daemon -q assembleRelease "$@"
+"$HOME/tools/gradle-9.9.1/bin/gradle" --no-daemon -q assembleRelease "$@"
 ls -l lock/build/outputs/apk/release/*.apk companion/build/outputs/apk/release/*.apk

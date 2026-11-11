@@ -88,6 +88,13 @@ object AppIconCache {
         _icons.update { cur -> all + cur }
     }
 
+    /** Deletes [dev]'s cached icons (the device was removed). */
+    fun forget(dev: String) {
+        _icons.update { it - dev }
+        synchronized(requested) { requested.removeAll { it.startsWith("$dev/") } }
+        thread(name = "icons-forget") { deviceDir(dev).deleteRecursively() }
+    }
+
     /** One folder per device, named by a hash so the topic (part of the pairing) isn't a file name. */
     private fun deviceDir(dev: String): File {
         val h = MessageDigest.getInstance("SHA-256").digest(dev.toByteArray())

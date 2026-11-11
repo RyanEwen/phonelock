@@ -124,10 +124,16 @@ internal fun AllowedNowSection(dev: String, state: PhoneState, now: Long) {
     val bit = modeBit(state.mode)
     // Mirrors the device's home screen: scheduled apps, then apps allowed for a while, then apps paused
     // for a while (only those the schedule would otherwise allow now).
-    val forNow = state.home.filter { (state.masks[it] ?: (MODE_NORMAL or MODE_LIMITED)) and bit != 0 }
+    // Wi-Fi and Bluetooth have their own section (DeviceControlsSection), not app icons.
+    val forNow = appsOnly(state.home).filter { (state.masks[it] ?: (MODE_NORMAL or MODE_LIMITED)) and bit != 0 }
     val paused = state.blocks.filterValues { it > now }.filterKeys { it in forNow }
     val scheduled = phoneFirst(state, forNow - paused.keys)
-    val live = state.grants.filterValues { it > now }
+    val live = state.grants.filterValues { it > now }.filterKeys { !DeviceControls.isControl(it) }
+    // Wi-Fi and Bluetooth allowed now (by schedule and not paused, or for a while): pills after the icons.
+    val controlsNow = DeviceControls.ALL.filter { id ->
+        val scheduled = id in state.home && (state.masks[id] ?: (MODE_NORMAL or MODE_LIMITED)) and bit != 0
+        (scheduled && (state.blocks[id] ?: 0) <= now) || (state.grants[id] ?: 0) > now
+    }
 
     Section("Allowed right now") {
         if (scheduled.isNotEmpty()) {
@@ -144,6 +150,9 @@ internal fun AllowedNowSection(dev: String, state: PhoneState, now: Long) {
             AppIconGrid(dev, state, phoneFirst(state, paused.keys), onTap = { unpausing = it },
                 notes = paused.mapValues { "until ${time(it.value)}" }, dimmed = paused.keys)
         }
+        ControlPills(dev, controlsNow, label = { id ->
+            DeviceControls.label(id) + (state.grants[id]?.takeIf { it > now }?.let { " · until ${time(it)}" } ?: "")
+        }, onTap = { id -> if ((state.grants[id] ?: 0) > now) granted = id else blocking = id })
     }
 
     blocking?.let { p ->
@@ -156,7 +165,7 @@ internal fun AllowedNowSection(dev: String, state: PhoneState, now: Long) {
             extra = "Allow again now" to { Hub.unblock(dev, p); unpausing = null })
     }
     granted?.let { p ->
-        val until = live[p] ?: 0
+        val until = state.grants[p] ?: 0
         AlertDialog(
             onDismissRequest = { granted = null },
             title = { Text("${state.label(p)} until ${time(until)}") },
@@ -205,21 +214,32 @@ internal fun NotAllowedNowSection(dev: String, state: PhoneState) {
     val nowMs = System.currentTimeMillis()
     // Paused apps that the schedule allows now appear greyed out under "Allowed right now" instead; ones the
     // schedule excludes anyway are listed here as usual.
-    val outOfHours = state.home.filter { (state.masks[it] ?: (MODE_NORMAL or MODE_LIMITED)) and bit == 0 }
+    val outOfHours = appsOnly(state.home).filter { (state.masks[it] ?: (MODE_NORMAL or MODE_LIMITED)) and bit == 0 }
     val paused = state.blocks.filterValues { it > nowMs }.filterKeys { it in outOfHours }
     val blockedNow = outOfHours
-    val grantable = phoneFirst(state, (blockedNow + state.others).distinct())
+    val grantable = phoneFirst(state, appsOnly(blockedNow + state.others).distinct())
+    // Wi-Fi and Bluetooth not allowed now (out of hours, paused, or never ticked): pills after the icons.
+    val controlsOff = if (!state.full || DeviceControls.ALL.none { it in state.home || it in state.others || it in state.notOffered })
+        emptyList() // not known yet, or a lock app too old to have them
+    else DeviceControls.ALL.filter { id ->
+        val scheduled = id in state.home && (state.masks[id] ?: (MODE_NORMAL or MODE_LIMITED)) and bit != 0
+        val allowed = (scheduled && (state.blocks[id] ?: 0) <= nowMs) || (state.grants[id] ?: 0) > nowMs
+        !allowed && id !in state.notOffered
+    }
 
     Section("Not allowed right now") {
         Text(if (state.others.isEmpty() && state.notOffered.isEmpty()) "Tap Refresh to load the device's apps."
             else "Tap an app to allow it for a while.", style = MaterialTheme.typography.bodySmall)
         AppIconGrid(dev, state, grantable, onTap = { pick = it },
             notes = paused.mapValues { "Paused until\n${time(it.value)}" })
+        ControlPills(dev, controlsOff, label = { id ->
+            DeviceControls.label(id) + (state.blocks[id]?.takeIf { it > nowMs }?.let { " · paused until ${time(it)}" } ?: "")
+        }, onTap = { pick = it })
     }
 
     pick?.let { p ->
         // A paused app can simply be given back; any app can be allowed for a set time.
-        val unpause = if (p in paused) ("Allow again now" to { Hub.unblock(dev, p); pick = null }) else null
+        val unpause = if (p in paused || (state.blocks[p] ?: 0) > nowMs) ("Allow again now" to { Hub.unblock(dev, p); pick = null }) else null
         LengthDialog("Allow ${state.label(p)} for how long?", onPick = { m -> Hub.grant(dev, p, m); pick = null },
             onDismiss = { pick = null }, extra = unpause)
     }

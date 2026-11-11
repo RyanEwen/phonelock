@@ -22,13 +22,11 @@ Needs JDK 17, Android SDK (`~/android-sdk`, platform 36, build-tools 36) and Gra
 Signing key and secrets live in `secrets/` (git-ignored). Keep `secrets/phonelock.keystore` safe: updates must be
 signed with the same key.
 
-## Set up a child's phone without a PC
+## Set up a child's device from a parent's phone
 
-In the parent app, tap **Set up a new phone**, enter the child's phone name, your name and a parent PIN (and optionally Wi-Fi), then follow the steps it shows: factory reset the child's phone, tap its first welcome screen 6 times to open Android's setup QR scanner, and scan the code. Android downloads the lock app from the public release (`Setup.LOCK_APK_URL`), checks it is signed with our key, makes it device owner and hands it the pairing and PIN, so the phone starts locked and already connected to that parent's app. USB debugging stays off. The second parent adds the phone from the first parent's app: phone settings > **Share with another parent**.
+In the parent app, tap **Set up a child's device** and follow the steps it shows. On the child's device (Android 13 or later, on the same Wi-Fi, with no accounts signed in): turn on Developer options, then Wireless debugging > **Pair device with pairing code**. The parent app finds it, pairs with the code, installs the lock app from the public release (checking it is signed with our key), makes it device owner, pairs it with the parent app and sets the parent PIN, turns on the features that need a one-time grant (screen view, call roles, call log, files, Do Not Disturb, battery saver exemption), confirms the device answers through the hub, then switches debugging off. Nothing is erased. Add the child's accounts back afterwards in parent mode (hold the clock 4 s, enter the PIN). The second parent adds the device from the first parent's app: device settings > **Share with another parent**. **Fix setup over Wi-Fi** in the device settings re-applies the one-time grants on a device already set up.
 
-Afterwards, in parent mode on the child's phone (hold the clock 4 s, enter the PIN), add their Google account and turn on Settings > Accessibility > Parent screen view.
-
-Publishing a release (both APKs, to the GitHub releases the setup code downloads from):
+Publishing a release (both APKs and `lock-version.json`, to the GitHub releases the setup code downloads from; installed lock apps check it a few times a day and update themselves the next time the screen is off):
 
 ```bash
 tools/publish-release.sh <version>
@@ -50,6 +48,8 @@ tools/configure-lock.sh <slug> [adb-serial]
 ```
 
 Parents can then find the phone (opens Google Maps), ring it at full volume and view its screen from the parent app. The kid gets a notice whenever a parent views the screen, both parents' activity logs record every view, and location is kept switched on.
+
+The device also logs its location every 15 minutes (kept 7 days, shown in the parent app's Location history, and sent late rather than lost when offline) and reports its battery with every message. Parents choose a low-battery alert level, and get "Turning off" and "Turned on" notices, so a dead battery can be told apart from lost signal. Her home screen says that location and battery are shared. `tools/configure-lock.sh` exempts the lock app from Doze so this keeps working while the device sits still.
 
 ## adb control
 

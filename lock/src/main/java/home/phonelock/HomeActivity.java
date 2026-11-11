@@ -30,18 +30,33 @@ public class HomeActivity extends Activity {
     private final Handler h = new Handler(Looper.getMainLooper());
     private AppGrid homeGrid, allowedGrid, pausedGrid;
     private TextView allowedHeading, pausedHeading;
+    /**
+     * Wi-Fi and Bluetooth: not on the home grid but behind the ⋮ button next to "Ask for an app", and only
+     * while allowed (by schedule or for a while). The menu always ends with Power, for turning the device
+     * off or restarting it. (Settings, when allowed, is an ordinary app on the grid.)
+     */
+    private static final List<String> QUICK = BuiltInApps.ALL;
+    private TextView quickButton;
+    private final List<String> quickAllowed = new ArrayList<>();
     /** "Bedtime until 7:00 AM" under the date; hidden in normal hours. */
     private TextView modeText;
+    /** "Battery low (12%). Plug in to charge." under the date; hidden unless low and not charging. */
+    private TextView batteryText;
     /** Situation the screen was last built for, so the tick refreshes when it changes. */
     private int shownMode = -1;
     private LinearLayout parentBar;
     private TextView parentText;
     private boolean receiversOn;
 
+    /**
+     * An app was installed, removed or changed: re-apply in the background (the home screen redraws when
+     * that finishes). Changes right after an apply are its own hiding and showing of apps, and are ignored so
+     * they can't set off another round.
+     */
     private final BroadcastReceiver pkgReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) {
-            Policy.apply(c);
-            refresh();
+            if (Policy.justApplied()) return;
+            Policy.applySoon(c);
         }
     };
 
@@ -49,6 +64,13 @@ public class HomeActivity extends Activity {
     private final BroadcastReceiver policyChanged = new BroadcastReceiver() {
         @Override public void onReceive(Context c, Intent i) {
             refresh();
+        }
+    };
+
+    /** Battery level or charging changed: show or hide the low-battery notice. */
+    private final BroadcastReceiver batteryChanged = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
+            updateBattery();
         }
     };
 
@@ -106,6 +128,16 @@ public class HomeActivity extends Activity {
         date.setGravity(Gravity.CENTER);
         root.addView(date, new LinearLayout.LayoutParams(-1, -2));
 
+        // Said plainly on her own screen: her parents can see these.
+        TextView shared = new TextView(this);
+        shared.setText("Location, battery, calls and app use are shared with your parents");
+        shared.setTextColor(Color.rgb(120, 126, 140));
+        shared.setTextSize(12);
+        shared.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(-1, -2);
+        sl.topMargin = dp(4);
+        root.addView(shared, sl);
+
         // Parent unlock: press and hold the clock for 4 seconds.
         clock.setOnTouchListener(new View.OnTouchListener() {
             final Runnable fire = () -> askPin();
@@ -129,6 +161,19 @@ public class HomeActivity extends Activity {
         ml.gravity = Gravity.CENTER_HORIZONTAL;
         ml.topMargin = dp(12);
         root.addView(modeText, ml);
+
+        // Same pill shape as the situation above, in red, so a low battery is hard to miss.
+        batteryText = new TextView(this);
+        batteryText.setTextColor(Color.rgb(255, 190, 185));
+        batteryText.setTextSize(15);
+        batteryText.setBackground(rounded(Color.argb(90, 220, 60, 50), 50));
+        batteryText.setPadding(dp(16), dp(6), dp(16), dp(6));
+        batteryText.setGravity(Gravity.CENTER);
+        batteryText.setVisibility(View.GONE);
+        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(-2, -2);
+        bl.gravity = Gravity.CENTER_HORIZONTAL;
+        bl.topMargin = dp(8);
+        root.addView(batteryText, bl);
 
         parentBar = new LinearLayout(this);
         parentBar.setOrientation(LinearLayout.VERTICAL);
@@ -169,9 +214,26 @@ public class HomeActivity extends Activity {
         ask.setBackground(rounded(Color.rgb(52, 60, 84), 28));
         ask.setTextSize(16);
         ask.setStateListAnimator(null);
-        LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(-1, dp(56));
+        // Ask, with the ⋮ button (Wi-Fi, Bluetooth, Power) beside it.
+        LinearLayout bottom = new LinearLayout(this);
+        bottom.setGravity(Gravity.CENTER_VERTICAL);
+        bottom.addView(ask, new LinearLayout.LayoutParams(0, dp(56), 1));
+        quickButton = new TextView(this);
+        quickButton.setText("⋮");
+        quickButton.setTextSize(26);
+        quickButton.setTextColor(Color.WHITE);
+        quickButton.setGravity(Gravity.CENTER);
+        quickButton.setBackground(rounded(Color.rgb(52, 60, 84), 28));
+        quickButton.setContentDescription("Wi-Fi, Bluetooth and power");
+        quickButton.setOnClickListener(v -> showQuickMenu());
+        LinearLayout.LayoutParams ql = new LinearLayout.LayoutParams(dp(56), dp(56));
+        ql.leftMargin = dp(10);
+        bottom.addView(quickButton, ql);
+        LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(-1, -2);
         al.setMargins(dp(8), dp(8), dp(8), dp(4));
-        root.addView(ask, al);
+        root.addView(bottom, al);
+
+
 
         setContentView(root);
     }
@@ -182,17 +244,39 @@ public class HomeActivity extends Activity {
             Toast.makeText(this, "Not set up yet", Toast.LENGTH_SHORT).show();
             return;
         }
-        List<String> pkgs = Remote.otherApps(this);
+        // Anything she can't use right now: unscheduled apps, and her own apps that are outside their hours
+        // or paused (e.g. Phone at bedtime), so she can ask for those too.
+        List<String> pkgs = new ArrayList<>(Remote.otherApps(this));
+        // Apps a parent hid from the list are never offered, whatever their schedule says.
+        List<String> usable = Policy.homeApps(this);
+        java.util.Set<String> hidden = Policy.notOffered(this);
+        for (String p : Schedule.masks(this).keySet()) {
+            if (!usable.contains(p) && !pkgs.contains(p) && !hidden.contains(p) && Policy.isPresent(this, p)) pkgs.add(p);
+        }
         if (pkgs.isEmpty()) {
             Toast.makeText(this, "Nothing to ask for", Toast.LENGTH_SHORT).show();
             return;
         }
+        // Wi-Fi and Bluetooth aren't apps: offered as pills after the app icons, not in the grid.
+        List<String> controls = new ArrayList<>();
+        for (String id : BuiltInApps.ALL) if (pkgs.remove(id)) controls.add(id);
+
         // Icons, not a text list: easier to find the app you mean.
-        AppGrid grid = new AppGrid(this);
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(16);
-        grid.setPadding(pad, pad, pad, pad);
+        body.setPadding(pad, pad, pad, pad);
+        AppGrid grid = new AppGrid(this);
+        body.addView(grid);
+        // One pill per row, centred: their names are too long to sit side by side in the dialog.
+        LinearLayout pills = new LinearLayout(this);
+        pills.setOrientation(LinearLayout.VERTICAL);
+        pills.setGravity(Gravity.CENTER_HORIZONTAL);
+        LinearLayout.LayoutParams pillsLp = new LinearLayout.LayoutParams(-1, -2);
+        pillsLp.topMargin = dp(16);
+        body.addView(pills, pillsLp);
         android.widget.ScrollView scroll = new android.widget.ScrollView(this);
-        scroll.addView(grid);
+        scroll.addView(body);
         AlertDialog pick = new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("Which app?")
                 .setView(scroll)
@@ -204,6 +288,29 @@ public class HomeActivity extends Activity {
             pick.dismiss();
             askHowLong(e);
         });
+        for (AppGrid.Entry e : AppGrid.load(this, controls, false)) {
+            // Icon and name in a rounded pill, like the ⋮ menu's.
+            LinearLayout pill = new LinearLayout(this);
+            pill.setGravity(Gravity.CENTER_VERTICAL);
+            pill.setBackground(rounded(Color.rgb(52, 60, 84), 24));
+            pill.setPadding(dp(8), dp(8), dp(18), dp(8));
+            android.widget.ImageView icon = new android.widget.ImageView(this);
+            icon.setImageDrawable(e.icon);
+            pill.addView(icon, new LinearLayout.LayoutParams(dp(30), dp(30)));
+            TextView name = new TextView(this);
+            name.setText(e.label);
+            name.setTextColor(Color.WHITE);
+            name.setTextSize(15);
+            name.setPadding(dp(10), 0, 0, 0);
+            pill.addView(name);
+            pill.setOnClickListener(v -> {
+                pick.dismiss();
+                askHowLong(e);
+            });
+            LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(-2, -2);
+            pl.bottomMargin = dp(10);
+            pills.addView(pill, pl);
+        }
         pick.show();
     }
 
@@ -220,9 +327,10 @@ public class HomeActivity extends Activity {
             registerReceiver(screenOff, new IntentFilter(Intent.ACTION_SCREEN_OFF),
                     Context.RECEIVER_EXPORTED);
             registerReceiver(policyChanged, new IntentFilter(Policy.ACTION_CHANGED), Context.RECEIVER_NOT_EXPORTED);
+            registerReceiver(batteryChanged, new IntentFilter(Intent.ACTION_BATTERY_CHANGED), Context.RECEIVER_EXPORTED);
             receiversOn = true;
         }
-        Policy.apply(this);
+        Policy.applySoon(this);
         RemoteService.start(this);
         enforceLockTask();
         refresh();
@@ -245,9 +353,18 @@ public class HomeActivity extends Activity {
             unregisterReceiver(pkgReceiver);
             unregisterReceiver(screenOff);
             unregisterReceiver(policyChanged);
+            unregisterReceiver(batteryChanged);
         }
         h.removeCallbacksAndMessages(null);
         super.onDestroy();
+    }
+
+    /** Shows the low-battery notice while the level is at or below the low mark and it isn't charging. */
+    private void updateBattery() {
+        int level = Battery.level(this);
+        boolean low = level >= 0 && level <= Battery.lowAt(this) && !Battery.charging(this);
+        batteryText.setText("Battery low (" + level + "%). Plug in to charge.");
+        batteryText.setVisibility(low ? View.VISIBLE : View.GONE);
     }
 
     @Override
@@ -287,7 +404,7 @@ public class HomeActivity extends Activity {
 
     private void endParentMode() {
         Policy.prefs(this).edit().putLong("parent_until", 0).apply();
-        Policy.apply(this);
+        Policy.applySoon(this);
         startActivity(new Intent(this, HomeActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                 | Intent.FLAG_ACTIVITY_CLEAR_TOP));
         enforceLockTask();
@@ -339,6 +456,10 @@ public class HomeActivity extends Activity {
             return true;
         });
         dialog.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+        // Put the keyboard away with the dialog; otherwise it can stay up (or leave a keyboard-sized gap)
+        // over the home screen, which has nothing to type into.
+        dialog.setOnDismissListener(d -> getSystemService(android.view.inputmethod.InputMethodManager.class)
+                .hideSoftInputFromWindow(in.getWindowToken(), 0));
         dialog.show();
         in.requestFocus();
     }
@@ -362,7 +483,7 @@ public class HomeActivity extends Activity {
         if (r == 0) {
             Policy.prefs(this).edit()
                     .putLong("parent_until", System.currentTimeMillis() + 15 * 60_000L).apply();
-            Policy.apply(this);
+            Policy.applySoon(this);
             enforceLockTask();
         } else if (r > 0) {
             Toast.makeText(this, "Try again in " + r + " s", Toast.LENGTH_LONG).show();
@@ -372,6 +493,12 @@ public class HomeActivity extends Activity {
     }
 
     private void launch(String pkg) {
+        // Wi-Fi and Bluetooth are screens of this app: open them on top of the home screen. (The new-task
+        // flags below, meant for other apps, would only bring this app's own task forward.)
+        if (BuiltInApps.is(pkg)) {
+            startActivity(BuiltInApps.launch(this, pkg));
+            return;
+        }
         Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
         if (i == null) {
             Toast.makeText(this, "Not available", Toast.LENGTH_SHORT).show();
@@ -399,12 +526,20 @@ public class HomeActivity extends Activity {
             modeText.setVisibility(View.VISIBLE);
         }
 
-        List<String> scheduled = Schedule.allowedNow(this);
+        List<String> scheduled = new ArrayList<>(Schedule.allowedNow(this));
+        java.util.Map<String, Long> grants = Grants.load(this);
+
+        // Wi-Fi and Bluetooth go behind the ⋮ button, not on the grids.
+        quickAllowed.clear();
+        for (String q : QUICK) {
+            if (scheduled.contains(q) || grants.containsKey(q)) quickAllowed.add(q);
+        }
+        scheduled.removeAll(QUICK);
+
         homeGrid.setApps(phoneFirstThenByName(AppGrid.load(this, scheduled, true)), e -> launch(e.pkg));
 
-        java.util.Map<String, Long> grants = Grants.load(this);
         List<String> extra = new ArrayList<>();
-        for (String p : grants.keySet()) if (!scheduled.contains(p)) extra.add(p);
+        for (String p : grants.keySet()) if (!scheduled.contains(p) && !QUICK.contains(p)) extra.add(p);
         List<AppGrid.Entry> allowed = AppGrid.load(this, extra, true);
         for (AppGrid.Entry e : allowed) e.note = "until " + Remote.time(this, grants.get(e.pkg));
         allowedGrid.setApps(allowed, e -> launch(e.pkg));
@@ -415,6 +550,7 @@ public class HomeActivity extends Activity {
         List<String> pausedPkgs = new ArrayList<>();
         java.util.Map<String, Integer> masks = Schedule.masks(this);
         for (String p : blocks.keySet()) {
+            if (QUICK.contains(p)) continue;
             Integer m = masks.get(p);
             if (m != null && (m & mode) != 0) pausedPkgs.add(p);
         }
@@ -426,6 +562,65 @@ public class HomeActivity extends Activity {
         pausedGrid.setApps(paused, e -> Toast.makeText(this,
                 e.label + " is paused until " + Remote.time(this, blocks.get(e.pkg)), Toast.LENGTH_SHORT).show());
         showIf(!paused.isEmpty(), pausedHeading, pausedGrid);
+    }
+
+    /**
+     * Opens the menu above the ⋮ button: a pill for Wi-Fi and Bluetooth when allowed right now, then Power,
+     * like a floating action button's expanded actions.
+     */
+    private void showQuickMenu() {
+        LinearLayout menu = new LinearLayout(this);
+        menu.setOrientation(LinearLayout.VERTICAL);
+        menu.setGravity(Gravity.END);
+        android.widget.PopupWindow popup = new android.widget.PopupWindow(menu, -2, -2, true);
+        List<AppGrid.Entry> items = new ArrayList<>(AppGrid.load(this, quickAllowed, false));
+        items.add(new AppGrid.Entry(POWER, "Power", getDrawable(android.R.drawable.ic_lock_power_off)));
+        for (AppGrid.Entry e : items) {
+            LinearLayout pill = new LinearLayout(this);
+            pill.setGravity(Gravity.CENTER_VERTICAL);
+            pill.setBackground(rounded(Color.rgb(52, 60, 84), 26));
+            pill.setPadding(dp(10), dp(8), dp(20), dp(8));
+            android.widget.ImageView icon = new android.widget.ImageView(this);
+            icon.setImageDrawable(e.icon);
+            pill.addView(icon, new LinearLayout.LayoutParams(dp(36), dp(36)));
+            TextView label = new TextView(this);
+            label.setText(e.label);
+            label.setTextColor(Color.WHITE);
+            label.setTextSize(16);
+            label.setPadding(dp(12), 0, 0, 0);
+            pill.addView(label);
+            pill.setOnClickListener(v -> {
+                popup.dismiss();
+                if (POWER.equals(e.pkg)) showPower(); else launch(e.pkg);
+            });
+            LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(-2, -2);
+            pl.bottomMargin = dp(10);
+            menu.addView(pill, pl);
+        }
+        menu.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+        popup.setElevation(dp(8));
+        // Just above the button, right edges lined up.
+        popup.showAsDropDown(quickButton, quickButton.getWidth() - menu.getMeasuredWidth(),
+                -quickButton.getHeight() - menu.getMeasuredHeight() - dp(6));
+    }
+
+    /** Not an app: the quick menu's Power item. */
+    private static final String POWER = "power";
+
+    /**
+     * Android's power menu (Power off, Restart, Emergency). If screen view's service isn't running, falls
+     * back to offering a restart, which the device owner can do itself (powering off needs the system menu).
+     */
+    private void showPower() {
+        if (ScreenService.showPowerMenu()) return;
+        new AlertDialog.Builder(this).setTitle("Restart this device?")
+                .setMessage("To turn it off instead, hold the power button.")
+                .setPositiveButton("Restart", (d, w) -> {
+                    try { Policy.dpm(this).reboot(Policy.admin(this)); } catch (Exception e) {
+                        Toast.makeText(this, "Couldn't restart", Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton("Cancel", null).show();
     }
 
     private static void showIf(boolean show, View... views) {

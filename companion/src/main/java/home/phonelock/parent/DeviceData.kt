@@ -16,10 +16,30 @@ import java.net.URL
 import kotlin.concurrent.thread
 
 /** One safe number. */
-data class SafeEntry(val name: String, val number: String)
+data class SafeEntry(val name: String, val number: String) {
+    companion object {
+        /**
+         * A number reduced to what identifies it, so "(705) 555-1234", "705-555-1234" and "+1 705 555 1234"
+         * count as the same: digits only, without North America's leading country code 1.
+         */
+        fun key(number: String): String {
+            val digits = number.filter(Char::isDigit)
+            return if (digits.length == 11 && digits.startsWith("1")) digits.drop(1) else digits
+        }
+    }
+}
 
 /** Whether outgoing / incoming calls are limited to [safe]. */
 data class CallSettings(val limitOut: Boolean = false, val limitIn: Boolean = false, val safe: List<SafeEntry> = emptyList()) {
+    /**
+     * These settings with [entry] on the safe list, unless the same number (in any format) is already there.
+     * Duplicates added before numbers were compared this way are dropped at the same time.
+     */
+    fun withSafe(entry: SafeEntry): CallSettings = copy(safe = (safe + entry).distinctBy { SafeEntry.key(it.number) })
+
+    /** Whether [number] (in any format) is on the safe list. */
+    fun isSafe(number: String) = safe.any { SafeEntry.key(it.number) == SafeEntry.key(number) }
+
     fun safeJson() = JSONArray().apply { safe.forEach { put(JSONObject().put("name", it.name).put("number", it.number)) } }
     fun toJson(): JSONObject = JSONObject().put("limitOut", limitOut).put("limitIn", limitIn).put("safe", safeJson())
 
@@ -37,7 +57,10 @@ data class CallSettings(val limitOut: Boolean = false, val limitIn: Boolean = fa
 data class CallEntry(val ts: Long, val number: String, val name: String, val type: String, val durationS: Long)
 
 /** [key] is Android's lookup key, which survives contacts being re-merged. */
-data class Contact(val key: String, val name: String, val numbers: List<String>)
+data class Contact(val key: String, val name: String, val numbers: List<String>) {
+    /** Its numbers with the same number in different formats listed once (the first format seen). */
+    val distinctNumbers: List<String> get() = numbers.distinctBy { SafeEntry.key(it) }
+}
 
 data class FileEntry(val name: String, val dir: Boolean, val size: Long, val mtime: Long)
 
@@ -179,12 +202,26 @@ object DeviceData {
                 .sortedByDescending { it.ts }.take(MAX_CALLS)
             all + (dev to merged)
         }
+        saveCalls()
+    }
+
+    /** Persists the call logs (kept across restarts). */
+    private fun saveCalls() {
         val o = JSONObject()
         _calls.value.forEach { (k, l) ->
             o.put(k, JSONArray().apply { l.forEach { put(JSONObject().put("ts", it.ts).put("number", it.number)
                 .put("name", it.name).put("type", it.type).put("dur", it.durationS)) } })
         }
         prefs.edit().putString("calls", o.toString()).apply()
+    }
+
+    /** Deletes everything kept for [dev], including its saved call log (the device was removed). */
+    fun forget(dev: String) {
+        _calls.update { it - dev }
+        _contacts.update { it - dev }
+        _folders.update { it - dev }
+        transfer.update { it - dev }
+        saveCalls()
     }
 
     private fun parseCalls(a: JSONArray) = (0 until a.length()).map { a.getJSONObject(it) }.map {

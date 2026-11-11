@@ -19,7 +19,7 @@ object Setup {
      * URL-safe base64 SHA-256 of the lock app's signing certificate (secrets/phonelock.keystore). Android
      * refuses the download unless it is signed by this key, so a swapped file on the host can't be installed.
      */
-    private const val LOCK_SIGNATURE_SHA256 = "iuGxH0rozJJdlt18LabbsCPhxD3R5WTsIs3a7hG5QyM"
+    internal const val LOCK_SIGNATURE_SHA256 = "iuGxH0rozJJdlt18LabbsCPhxD3R5WTsIs3a7hG5QyM"
     private const val ADMIN_COMPONENT = "home.phonelock/home.phonelock.AdminReceiver"
     /** New phones use the PhoneLock hub when this build has one, else ntfy.sh. */
     private val DEFAULT_SERVER get() = Push.hub.ifEmpty { "https://ntfy.sh" }

@@ -86,6 +86,14 @@ object PhoneTools {
     /** Forgets the screenshot shown for [dev]. */
     fun clearScreen(dev: String) = _screens.update { it - dev }
 
+    /** Drops what's held in memory for [dev] (the device was removed). */
+    fun forget(dev: String) {
+        _locations.update { it - dev }
+        _screens.update { it - dev }
+        locating.update { it - dev }
+        capturing.update { it - dev }
+    }
+
     private fun track(dev: String, o: JSONObject): JSONObject {
         synchronized(myRequests) {
             myRequests[o.getString("id")] = dev

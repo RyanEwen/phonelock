@@ -17,6 +17,10 @@
         android:theme="@android:style/Theme.Material.NoActionBar"
         android:allowBackup="false">
 
+        <!-- Google Play: this is a parental control (child monitoring) app. -->
+        <meta-data android:name="isMonitoringTool" android:value="child_monitoring" />
+        <meta-data android:name="com.google.android.geo.API_KEY" android:value="${mapsApiKey}" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

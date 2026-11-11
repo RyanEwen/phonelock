@@ -28,13 +28,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
+/** A refresh with no reply after this long means the device isn't answering (offline, off, or no signal). */
+private const val NO_ANSWER_MS = 20_000L
+/** Not heard from in this long: the status dot turns amber. */
+private const val QUIET_MS = 40 * 60_000L
+/** A battery reading older than this shows its age. */
+private const val BATTERY_FRESH_MS = 20 * 60_000L
+
 /**
- * The selected device at a glance: name, connection (live connection or push), last update, and the current situation as a pill
- * (e.g. "Bedtime until 7:00 AM"), with refresh and settings.
+ * The selected device at a glance: name, when it was last heard from and its battery, and the current
+ * situation as a pill (e.g. "Bedtime until 7:00 AM"), with refresh and settings. [askedAt] is when this app
+ * last asked it for its state, so a refresh that goes unanswered says so instead of doing nothing visible.
+ * [connected] is this phone's own link to the hub (live connection or push).
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun PhoneHeader(name: String, state: PhoneState, connected: Boolean, now: Long,
+internal fun PhoneHeader(name: String, state: PhoneState, vitals: Vitals, askedAt: Long, connected: Boolean, now: Long,
                          onRefresh: () -> Unit, onMenu: () -> Unit, onLockNow: () -> Unit = {},
                          onStartMode: () -> Unit = {}, onEndMode: () -> Unit = {}) {
     Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(28.dp),
@@ -47,17 +56,23 @@ internal fun PhoneHeader(name: String, state: PhoneState, connected: Boolean, no
                 IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, contentDescription = "Refresh") }
                 IconButton(onClick = onMenu) { Icon(Icons.Default.MoreVert, contentDescription = "Device settings") }
             }
+            val status = deviceStatus(vitals, state, askedAt, connected, now)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Green when the live connection is up, amber while reconnecting.
-                Box(Modifier.size(8.dp).background(if (connected) Color(0xFF3DBE6B) else Color(0xFFE0A030), CircleShape))
-                Text((if (connected) "Connected" else "Connecting…") +
-                    (if (state.updated > 0) " · updated ${ago(now - state.updated)}" else " · no reply yet"),
-                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                // Green while the device is answering and recently heard from; amber otherwise.
+                Box(Modifier.size(8.dp).background(if (status.ok) Color(0xFF3DBE6B) else Color(0xFFE0A030), CircleShape))
+                Text(status.text, style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer)
             }
             // Pills wrap onto more lines rather than running off a narrow screen.
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp),
                 itemVerticalAlignment = Alignment.CenterVertically) {
                 Pill(situationLine(state), highlighted = state.mode != "normal")
+                if (vitals.battery >= 0) {
+                    // Low uses the parents' alert level, or 15% when the alert is off or not reported yet.
+                    val low = !vitals.charging && vitals.battery <= state.battAlert.takeIf { it > 0 }.let { it ?: 15 }
+                    val age = if (now - vitals.batteryAt > BATTERY_FRESH_MS) " · ${ago(now - vitals.batteryAt)}" else ""
+                    Pill("Battery ${vitals.battery}%" + (if (vitals.charging) " · charging" else "") + age, highlighted = low)
+                }
                 if (state.ringing) Pill("Ringing", highlighted = true)
             }
             // Start limited hours or bedtime by hand, or end the one that's running.
@@ -76,6 +91,28 @@ internal fun PhoneHeader(name: String, state: PhoneState, connected: Boolean, no
             }
         }
     }
+}
+
+/** The header's status line and whether things look fine ([ok]: answering and recently heard from). */
+private data class DeviceStatus(val text: String, val ok: Boolean)
+
+/**
+ * "Seen 3 min ago", "Checking… · seen 3 min ago" right after a refresh, and "Not answering · last seen 18
+ * min ago" when a refresh got no reply in [NO_ANSWER_MS]. Prefixed "Connecting…" while this phone itself
+ * has no link to the hub, since then nothing from the device could arrive either.
+ */
+private fun deviceStatus(v: Vitals, state: PhoneState, askedAt: Long, connected: Boolean, now: Long): DeviceStatus {
+    val seen = maxOf(v.seen, state.updated)
+    val prefix = if (connected) "" else "Connecting… · "
+    if (seen <= 0) return DeviceStatus(prefix + "No reply yet", false)
+    val waiting = askedAt > v.heard
+    val text = when {
+        waiting && now - askedAt >= NO_ANSWER_MS -> "Not answering · last seen ${ago(now - seen)}"
+        waiting -> "Checking… · seen ${ago(now - seen)}"
+        else -> "Seen ${ago(now - seen)}"
+    }
+    val ok = connected && !(waiting && now - askedAt >= NO_ANSWER_MS) && now - seen < QUIET_MS
+    return DeviceStatus(prefix + text, ok)
 }
 
 /**

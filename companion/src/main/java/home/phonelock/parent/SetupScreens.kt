@@ -130,7 +130,7 @@ internal fun SharePhoneDialog(device: Device, close: () -> Unit) {
         title = { Text("Share ${device.name}'s device") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("On the other parent's phone, open PhoneLock, tap \"Add a device that's already set up\" " +
+                Text("On the other parent's phone, open PhoneLock, tap \"Add a device another parent set up\" " +
                     "and scan this code.")
                 QrCode(Setup.pairingLink(device))
                 Text("Anyone with this code can control the device. Only show it to the other parent.",

@@ -57,6 +57,10 @@ final class AppGrid extends LinearLayout {
         PackageManager pm = c.getPackageManager();
         List<Entry> out = new ArrayList<>();
         for (String p : pkgs) {
+            if (BuiltInApps.is(p)) {
+                out.add(new Entry(p, BuiltInApps.label(p), BuiltInApps.icon(c, p)));
+                continue;
+            }
             if (launchableOnly && pm.getLaunchIntentForPackage(p) == null) continue;
             try {
                 ApplicationInfo ai = pm.getApplicationInfo(p, PackageManager.MATCH_UNINSTALLED_PACKAGES);
