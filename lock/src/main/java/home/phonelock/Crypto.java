@@ -55,6 +55,19 @@ public final class Crypto {
         return out;
     }
 
+    /** Decrypts a blob from {@link #sealBytes}; null if it wasn't sealed with this key and AAD. */
+    static byte[] openBytes(byte[] key, byte[] data, String aad) {
+        try {
+            if (data.length < 12 + 16) return null;
+            Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+            c.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, data, 0, 12));
+            c.updateAAD(aad.getBytes(StandardCharsets.US_ASCII));
+            return c.doFinal(data, 12, data.length - 12);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     /** Returns null if the message wasn't sealed with this key. */
     static String open(byte[] key, String sealed) {
         try {

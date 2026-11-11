@@ -40,6 +40,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -75,19 +76,21 @@ internal fun AppName(dev: String, pkg: String, label: String, modifier: Modifier
 /**
  * A launcher-style grid of the child phone's apps: icon with the name underneath, [columns] across.
  * [badge], if given, is drawn on each icon's corner (e.g. "✕" while editing); [notes] adds a small second
- * line under chosen apps (e.g. "until 7:00 PM"). Built from rows rather than a
+ * line under chosen apps (e.g. "until 7:00 PM"); [dimmed] apps are drawn greyed out. Built from rows rather than a
  * lazy grid because it sits inside the main screen's scrolling column.
  */
 @Composable
 internal fun AppIconGrid(dev: String, state: PhoneState, pkgs: List<String>, onTap: (String) -> Unit,
-                         badge: String? = null, columns: Int = 4, notes: Map<String, String> = emptyMap()) {
+                         badge: String? = null, columns: Int = 4, notes: Map<String, String> = emptyMap(),
+                         dimmed: Set<String> = emptySet()) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         pkgs.chunked(columns).forEach { row ->
             Row(Modifier.fillMaxWidth()) {
                 row.forEach { p ->
                     Column(Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).clickable { onTap(p) }
                         .padding(vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Box {
+                        // Dimmed apps (paused for a while) stay in place, greyed out.
+                        Box(Modifier.alpha(if (p in dimmed) 0.35f else 1f)) {
                             AppIcon(dev, p, state.label(p), 48.dp)
                             if (badge != null) Text(badge, Modifier.align(Alignment.TopEnd)
                                 .background(MaterialTheme.colorScheme.errorContainer, CircleShape)
@@ -97,7 +100,8 @@ internal fun AppIconGrid(dev: String, state: PhoneState, pkgs: List<String>, onT
                         Text(state.label(p), style = MaterialTheme.typography.labelMedium, maxLines = 1,
                             overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
                         notes[p]?.let {
-                            Text(it, style = MaterialTheme.typography.labelSmall, maxLines = 1,
+                            // Two lines, so a note like "Paused until / 9:34 PM" fits under a narrow icon.
+                            Text(it, style = MaterialTheme.typography.labelSmall, maxLines = 2,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
                         }
                     }
@@ -108,43 +112,77 @@ internal fun AppIconGrid(dev: String, state: PhoneState, pkgs: List<String>, onT
     }
 }
 
-/** "Allowed right now": temporary grants with time left, extend and stop. */
+/**
+ * "Allowed right now", mirroring the device's home screen: scheduled apps (tap to pause), apps allowed for a
+ * while (tap to extend or stop) and apps paused for a while (greyed out; tap to allow again).
+ */
 @Composable
 internal fun AllowedNowSection(dev: String, state: PhoneState, now: Long) {
     var blocking by remember(dev) { mutableStateOf<String?>(null) }
+    var unpausing by remember(dev) { mutableStateOf<String?>(null) }
+    var granted by remember(dev) { mutableStateOf<String?>(null) }
     val bit = modeBit(state.mode)
-    // Scheduled apps usable now: allowed in this situation and not blocked for a while.
-    val scheduled = state.home.filter {
-        (state.masks[it] ?: (MODE_NORMAL or MODE_LIMITED)) and bit != 0 && (state.blocks[it] ?: 0) <= now
-    }
+    // Mirrors the device's home screen: scheduled apps, then apps allowed for a while, then apps paused
+    // for a while (only those the schedule would otherwise allow now).
+    val forNow = state.home.filter { (state.masks[it] ?: (MODE_NORMAL or MODE_LIMITED)) and bit != 0 }
+    val paused = state.blocks.filterValues { it > now }.filterKeys { it in forNow }
+    val scheduled = phoneFirst(state, forNow - paused.keys)
     val live = state.grants.filterValues { it > now }
 
     Section("Allowed right now") {
         if (scheduled.isNotEmpty()) {
-            Text("Tap an app to block it for a while.", style = MaterialTheme.typography.bodySmall)
+            Text("Tap an app to pause it for a while.", style = MaterialTheme.typography.bodySmall)
             AppIconGrid(dev, state, scheduled, onTap = { blocking = it })
         }
-        if (live.isNotEmpty()) Text("Allowed for a while", style = MaterialTheme.typography.titleSmall)
-        live.forEach { (pkg, until) ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    AppName(dev, pkg, state.label(pkg))
-                    Text("until ${time(until)} (${fmtMinutes((until - now) / 60_000 + 1)} left)",
-                        style = MaterialTheme.typography.bodySmall)
-                }
-                TextButton(onClick = {
-                    Hub.grant(dev, pkg, (until - System.currentTimeMillis()) / 60_000 + 30)
-                }) { Text("+30 min") }
-                TextButton(onClick = { Hub.revoke(dev, pkg) }) { Text("Stop") }
-            }
+        if (live.isNotEmpty()) {
+            Text("Allowed for a while", style = MaterialTheme.typography.titleSmall)
+            AppIconGrid(dev, state, phoneFirst(state, live.keys), onTap = { granted = it },
+                notes = live.mapValues { "until ${time(it.value)}" })
         }
-        if (live.size > 1) OutlinedButton(onClick = { Hub.revoke(dev, "all") }) { Text("Stop all") }
+        if (paused.isNotEmpty()) {
+            Text("Paused for a while", style = MaterialTheme.typography.titleSmall)
+            AppIconGrid(dev, state, phoneFirst(state, paused.keys), onTap = { unpausing = it },
+                notes = paused.mapValues { "until ${time(it.value)}" }, dimmed = paused.keys)
+        }
     }
 
     blocking?.let { p ->
-        LengthDialog("Block ${state.label(p)} for how long?", onPick = { m -> Hub.block(dev, p, m); blocking = null },
+        LengthDialog("Pause ${state.label(p)} for how long?", onPick = { m -> Hub.block(dev, p, m); blocking = null },
             onDismiss = { blocking = null })
     }
+    unpausing?.let { p ->
+        LengthDialog("Allow ${state.label(p)} for how long?", onPick = { m -> Hub.grant(dev, p, m); unpausing = null },
+            onDismiss = { unpausing = null },
+            extra = "Allow again now" to { Hub.unblock(dev, p); unpausing = null })
+    }
+    granted?.let { p ->
+        val until = live[p] ?: 0
+        AlertDialog(
+            onDismissRequest = { granted = null },
+            title = { Text("${state.label(p)} until ${time(until)}") },
+            text = {
+                Column {
+                    TextButton(onClick = {
+                        Hub.grant(dev, p, (until - System.currentTimeMillis()) / 60_000 + 30); granted = null
+                    }) { Text("Add 30 minutes") }
+                    TextButton(onClick = { Hub.revoke(dev, p); granted = null }) { Text("Stop now") }
+                    if (live.size > 1) TextButton(onClick = { Hub.revoke(dev, "all"); granted = null }) {
+                        Text("Stop all allowed-for-a-while apps")
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { granted = null }) { Text("Close") } })
+    }
+}
+
+/**
+ * The one order for apps everywhere in this app, matching the device's home screen: Phone first, then
+ * alphabetical by name.
+ */
+internal fun phoneFirst(state: PhoneState, pkgs: Collection<String>): List<String> {
+    val dialers = setOf("com.google.android.dialer", "com.android.dialer")
+    return pkgs.sortedWith(compareBy<String>({ it !in dialers }, { state.label(it).lowercase() }))
 }
 
 /** The schedule bit for a situation name from the device. */
@@ -165,15 +203,18 @@ internal fun NotAllowedNowSection(dev: String, state: PhoneState) {
     // Unscheduled apps, scheduled ones the current situation excludes (e.g. at bedtime), and paused ones.
     val bit = modeBit(state.mode)
     val nowMs = System.currentTimeMillis()
-    val paused = state.blocks.filterValues { it > nowMs }
-    val blockedNow = state.home.filter { (state.masks[it] ?: (MODE_NORMAL or MODE_LIMITED)) and bit == 0 } + paused.keys
-    val grantable = (blockedNow + state.others).distinct().sortedBy { state.label(it).lowercase() }
+    // Paused apps that the schedule allows now appear greyed out under "Allowed right now" instead; ones the
+    // schedule excludes anyway are listed here as usual.
+    val outOfHours = state.home.filter { (state.masks[it] ?: (MODE_NORMAL or MODE_LIMITED)) and bit == 0 }
+    val paused = state.blocks.filterValues { it > nowMs }.filterKeys { it in outOfHours }
+    val blockedNow = outOfHours
+    val grantable = phoneFirst(state, (blockedNow + state.others).distinct())
 
     Section("Not allowed right now") {
         Text(if (state.others.isEmpty() && state.notOffered.isEmpty()) "Tap Refresh to load the device's apps."
             else "Tap an app to allow it for a while.", style = MaterialTheme.typography.bodySmall)
         AppIconGrid(dev, state, grantable, onTap = { pick = it },
-            notes = paused.mapValues { "paused until ${time(it.value)}" })
+            notes = paused.mapValues { "Paused until\n${time(it.value)}" })
     }
 
     pick?.let { p ->

@@ -30,6 +30,8 @@ final class AppGrid extends LinearLayout {
         final CharSequence label;
         final Drawable icon;
         String note;
+        /** Drawn greyed out (e.g. paused by a parent). */
+        boolean dimmed;
 
         Entry(String pkg, CharSequence label, Drawable icon) {
             this.pkg = pkg;
@@ -101,6 +103,10 @@ final class AppGrid extends LinearLayout {
         ImageView iv = new ImageView(getContext());
         iv.setImageDrawable(e.icon);
         cell.addView(iv, new LayoutParams(dp(56), dp(56)));
+        if (e.dimmed) {
+            iv.setAlpha(0.35f);
+            iv.setColorFilter(new android.graphics.ColorMatrixColorFilter(greyscale()));
+        }
 
         LayoutParams tl = new LayoutParams(-1, -2);
         tl.topMargin = dp(6);
@@ -116,6 +122,12 @@ final class AppGrid extends LinearLayout {
         mask.setCornerRadius(dp(20));
         return new android.graphics.drawable.RippleDrawable(
                 android.content.res.ColorStateList.valueOf(Color.argb(48, 255, 255, 255)), null, mask);
+    }
+
+    private static android.graphics.ColorMatrix greyscale() {
+        android.graphics.ColorMatrix m = new android.graphics.ColorMatrix();
+        m.setSaturation(0);
+        return m;
     }
 
     private TextView text(CharSequence s, int sp, int color) {

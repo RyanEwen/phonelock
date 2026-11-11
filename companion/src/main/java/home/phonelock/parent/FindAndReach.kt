@@ -45,7 +45,7 @@ import kotlinx.coroutines.delay
 
 /** A tonal button with an icon over its label, for the Location / Ring / View screen row. */
 @Composable
-private fun ActionTile(icon: ImageVector, label: String, modifier: Modifier = Modifier, enabled: Boolean = true,
+internal fun ActionTile(icon: ImageVector, label: String, modifier: Modifier = Modifier, enabled: Boolean = true,
                        highlighted: Boolean = false, onClick: () -> Unit) {
     FilledTonalButton(onClick = onClick, enabled = enabled, modifier = modifier.heightIn(min = 76.dp),
         shape = RoundedCornerShape(20.dp), contentPadding = PaddingValues(8.dp),
@@ -63,12 +63,12 @@ private const val REFRESH_EVERY_MS = 10_000L
 private const val REFRESH_FOR_MS = 2 * 60_000L
 
 /**
- * "Find and reach" card for one phone: find it (and open the spot in Google Maps), ring it, and view
- * its screen with optional auto-refresh. [now] is the screen's ticking clock, for "x min ago" text.
+ * "Find and reach" card for one device: find it (and open the spot in Google Maps), ring it, view its
+ * screen with optional auto-refresh, and open the Calls / Contacts / Files pages ([onOpen]). [now] is the screen's ticking clock, for "x min ago" text.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun FindAndReach(dev: String, name: String, state: PhoneState, now: Long) {
+internal fun FindAndReach(dev: String, name: String, state: PhoneState, now: Long, onOpen: (String) -> Unit) {
     val locations by PhoneTools.locations.collectAsState()
     val screens by PhoneTools.screens.collectAsState()
     val locating by PhoneTools.locating.collectAsState()
@@ -89,6 +89,8 @@ internal fun FindAndReach(dev: String, name: String, state: PhoneState, now: Lon
             ActionTile(Icons.Default.Face, if (dev in capturing) "Capturing…" else "View screen",
                 enabled = dev !in capturing, modifier = Modifier.weight(1f)) { PhoneTools.viewScreen(dev) }
         }
+        // Second row, same widths: pages for calls, contacts and files.
+        MoreRow(onOpen)
         locations[dev]?.let { LocationResult(it, name, now) }
         screens[dev]?.let { ScreenResult(dev, it, capturing = dev in capturing) }
     }

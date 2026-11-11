@@ -48,6 +48,11 @@ public final class Remote {
 
     /** Handle one ntfy message body. */
     static void handle(Context c, String body) {
+        handle(c, body, null);
+    }
+
+    /** As {@link #handle(Context, String)}, with the ntfy attachment URL when the message carried a file. */
+    static void handle(Context c, String body, String attachmentUrl) {
         if (!paired(c)) {
             // Legacy plain-text commands only work until a pairing secret is set.
             if (body.startsWith(RemoteService.REPLY_PREFIX) || body.startsWith("{")) return;
@@ -62,9 +67,38 @@ public final class Remote {
             String from = m.optString("from");
             if (FROM.equals(from)) return; // our own echo
             if (!fresh(c, m)) return;
-            dispatch(c, m, from);
+            if ("big".equals(m.optString("t"))) {
+                // A parent message too large for ntfy's 4 KB limit, carried as an encrypted attachment.
+                String inner = fetchBig(c, attachmentUrl, m.optString("id"));
+                JSONObject im = inner == null ? null : new JSONObject(inner);
+                if (im == null || FROM.equals(im.optString("from")) || !fresh(c, im)) return;
+                dispatch(c, im, im.optString("from"), null);
+                return;
+            }
+            dispatch(c, m, from, attachmentUrl);
         } catch (Exception e) {
             Log.w(Policy.TAG, "remote: " + e);
+        }
+    }
+
+    /** Downloads and decrypts a "big" wrapper's attachment (at most 1 MB); null if anything is off. */
+    private static String fetchBig(Context c, String url, String msgId) {
+        if (url == null || !url.startsWith(RemoteService.server(c) + "/")) return null;
+        try {
+            HttpURLConnection h = (HttpURLConnection) new URL(url).openConnection();
+            h.setConnectTimeout(15_000);
+            h.setReadTimeout(30_000);
+            byte[] enc;
+            try (java.io.InputStream in = h.getInputStream()) {
+                enc = in.readNBytes(1 << 20);
+            } finally {
+                h.disconnect();
+            }
+            byte[] plain = Crypto.openBytes(Crypto.key(secret(c)), enc, "phonelock/blob/" + msgId);
+            return plain == null ? null : new String(plain, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            Log.w(Policy.TAG, "big: " + e);
+            return null;
         }
     }
 
@@ -77,7 +111,7 @@ public final class Remote {
         // Grants and blocks stay meaningful while their time lasts (up to 24 h), so a device that was off
         // overnight still applies the rest of a long one; everything else expires after 6 h.
         String t = m.optString("t");
-        long maxAge = ("grant".equals(t) || "block".equals(t))
+        long maxAge = ("grant".equals(t) || "block".equals(t) || "mode".equals(t))
                 ? Math.min(LONG_MAX_AGE_MS, m.optLong("minutes", 0) * 60_000L) : MAX_AGE_MS;
         maxAge = Math.max(maxAge, MAX_AGE_MS);
         if (ts <= 0 || now - ts > maxAge || ts - now > MAX_FUTURE_MS) return false;
@@ -101,13 +135,19 @@ public final class Remote {
     }
 
     /** Commands that only make sense right away (ringing, locating, screenshots) are dropped after this. */
-    private static final long LIVE_MAX_AGE_MS = 2 * 60_000L;
+    private static final long LIVE_MAX_AGE_MS = 5 * 60_000L;
+    /** Deleting or renaming files and removing contacts are refused if they arrive later than this. */
+    private static final long DESTRUCTIVE_MAX_AGE_MS = 30 * 60_000L;
+
+    private static boolean recent(JSONObject m) {
+        return System.currentTimeMillis() - m.optLong("ts") <= DESTRUCTIVE_MAX_AGE_MS;
+    }
 
     private static boolean live(JSONObject m) {
         return System.currentTimeMillis() - m.optLong("ts") <= LIVE_MAX_AGE_MS;
     }
 
-    private static void dispatch(Context c, JSONObject m, String from) throws Exception {
+    private static void dispatch(Context c, JSONObject m, String from, String attachmentUrl) throws Exception {
         String who = from.isEmpty() ? "A parent" : from;
         switch (m.optString("t")) {
             case "status":
@@ -227,6 +267,33 @@ public final class Remote {
                 sendState(c, true);
                 break;
             }
+            case "mode": {
+                // Start limited hours or bedtime by hand for a while ("none" ends it). Counts from when the
+                // parent sent it, like grants, so it can't be saved up by keeping the device offline.
+                int mode = Schedule.parseMode(m.optString("mode"));
+                long now = System.currentTimeMillis();
+                long mins = Math.max(1, Math.min(24 * 60, m.optLong("minutes", 60)));
+                long until = Math.min(now, m.optLong("ts", now)) + mins * 60_000L;
+                if (mode == Schedule.LIMITED || mode == Schedule.BEDTIME) {
+                    if (until <= now) break;
+                    Schedule.setOverride(c, mode, until);
+                } else {
+                    Schedule.setOverride(c, 0, 0);
+                }
+                Policy.apply(c);
+                String txt = mode == Schedule.LIMITED || mode == Schedule.BEDTIME
+                        ? Schedule.modeLabel(mode) + " started until " + time(c, until)
+                        : "Manual limited hours or bedtime ended";
+                notifyKid(c, txt + " (" + who + ")");
+                event(c, who + ": " + txt, who, false);
+                sendState(c, false);
+                break;
+            }
+            case "uninstall":
+                // Irreversible, so refused if it arrives late (like deleting files).
+                if (!recent(m)) break;
+                AppRemover.uninstall(c, m.optString("app"), who);
+                break;
             case "offer": {
                 // Put an app on, or take it off, the "Give access" list (and the child's Ask picker).
                 String pkg = m.optString("app");
@@ -239,6 +306,50 @@ public final class Remote {
             case "icons":
                 AppIcons.send(c, m.optString("id"), m.optJSONArray("apps"));
                 break;
+            case "calls": {
+                // Safe list and whether outgoing / incoming calls are limited to it.
+                CallGuard.setLimits(c, m.optBoolean("limitOut"), m.optBoolean("limitIn"));
+                if (m.has("safe")) CallGuard.setSafeList(c, m.optJSONArray("safe"));
+                event(c, who + " changed the call settings", who, false);
+                sendState(c, true);
+                break;
+            }
+            case "calllog":
+                CallLogFeed.sendHistory(c, m.optString("id"));
+                break;
+            case "contacts":
+                contacts(c, m, who);
+                break;
+            case "files": {
+                String op = m.optString("op");
+                boolean destructive = "rm".equals(op) || "mv".equals(op) || "put".equals(op);
+                if (destructive && !recent(m)) break;
+                FileManager.handle(c, m, who, attachmentUrl);
+                break;
+            }
+            case "parentmode": {
+                // Remote parent mode: Settings and Play Store unlocked on the device, ending by itself.
+                // minutes 0 ends it now; the screen turning off also ends it, as with the PIN.
+                if (!live(m)) break;
+                long mins = Math.max(0, Math.min(12 * 60, m.optLong("minutes", 15)));
+                long until = mins == 0 ? 0 : System.currentTimeMillis() + mins * 60_000L;
+                // Store it now so the state sent below already shows it; the UI change runs on the main thread.
+                Policy.prefs(c).edit().putLong("parent_until", until).commit();
+                c.getMainExecutor().execute(() -> Policy.setParentMode(c, until));
+                String txt = mins == 0 ? "Parent mode ended" : "Parent mode on until " + time(c, until);
+                notifyKid(c, txt + " (" + who + ")");
+                event(c, who + ": " + txt, who, false);
+                sendState(c, false);
+                break;
+            }
+            case "pin": {
+                // New parent PIN (4 to 8 digits); never echoed back or logged.
+                String pin = m.optString("pin");
+                if (pin.length() < 4 || pin.length() > 8 || !pin.matches("[0-9]+")) break;
+                Policy.setPin(c, pin);
+                event(c, who + " changed the parent PIN", who, false);
+                break;
+            }
             case "locate":
                 if (!live(m)) break;
                 Locator.locate(c, m.optString("id"));
@@ -255,6 +366,29 @@ public final class Remote {
             default:
                 break;
         }
+    }
+
+    /** {@code contacts} with {@code op} list (default), add {name, number} or remove {contact}. */
+    private static void contacts(Context c, JSONObject m, String who) {
+        String op = m.optString("op", "list");
+        if ("add".equals(op)) {
+            String name = m.optString("name").trim(), number = m.optString("number").trim();
+            if (name.isEmpty() || number.isEmpty()) return;
+            if (Contacts.add(c, name, number)) {
+                notifyKid(c, who + " added " + name + " to your contacts");
+                event(c, who + ": added contact " + name, who, false);
+            } else {
+                event(c, "Couldn't add contact " + name, who, false);
+            }
+        } else if ("remove".equals(op)) {
+            if (!recent(m)) return;
+            String name = Contacts.remove(c, m.optString("key"));
+            if (name != null) {
+                notifyKid(c, who + " removed " + name + " from your contacts");
+                event(c, who + ": removed contact " + name, who, false);
+            }
+        }
+        Contacts.sendList(c, m.optString("id"));
     }
 
     /** "allowed in normal and limited hours", "blocked except when allowed for a while", … */
@@ -335,6 +469,8 @@ public final class Remote {
     }
 
     static void sendState(Context c, boolean full) {
+        // Starts the call-log feed once its permission exists (it may be granted after the service started).
+        CallLogFeed.watch(c);
         try {
             JSONObject o = msg("state");
             JSONObject grants = new JSONObject();
@@ -359,8 +495,14 @@ public final class Remote {
             o.put("blocks", blocks);
             o.put("home", home);
             o.put("parent", Policy.inParentMode(c));
+            o.put("parentUntil", Policy.inParentMode(c) ? Policy.prefs(c).getLong("parent_until", 0) : 0);
             o.put("ringing", Ringer.isRinging());
             o.put("mode", Schedule.modeName(Schedule.currentMode(c)));
+            int manual = Schedule.overrideMode(c);
+            if (manual != 0) {
+                o.put("manual", new JSONObject().put("mode", Schedule.modeName(manual))
+                        .put("until", Schedule.overrideUntil(c)));
+            }
             o.put("modeUntil", Schedule.currentModeUntil(c));
             if (full) {
                 JSONArray inst = new JSONArray();
@@ -375,7 +517,12 @@ public final class Remote {
                     labels.put(p, label(c, p));
                 }
                 o.put("notOffered", off);
+                o.put("removable", new JSONArray(AppRemover.removableOf(c, installedOthersAndHome(c))));
                 o.put("masks", new JSONObject(Schedule.masks(c)));
+                o.put("calls", CallGuard.settingsJson(c));
+                o.put("can", new JSONObject()
+                        .put("files", FileManager.permitted())
+                        .put("calllog", CallLogFeed.permitted(c)));
                 o.put("schedule", Schedule.rulesJson(c));
             }
             o.put("labels", labels);
@@ -399,6 +546,13 @@ public final class Remote {
     static List<String> notOfferedApps(Context c) {
         List<String> out = installedOthers(c);
         out.retainAll(Policy.notOffered(c));
+        return out;
+    }
+
+    /** Every app parents see in their list: home-screen apps, other launchable apps and hidden ones. */
+    private static List<String> installedOthersAndHome(Context c) {
+        List<String> out = new ArrayList<>(Policy.visibleApps(c));
+        for (String p : installedOthers(c)) if (!out.contains(p)) out.add(p);
         return out;
     }
 

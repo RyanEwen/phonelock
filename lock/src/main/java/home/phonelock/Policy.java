@@ -112,6 +112,13 @@ public final class Policy {
             android.Manifest.permission.ACCESS_FINE_LOCATION,
             android.Manifest.permission.ACCESS_COARSE_LOCATION,
             android.Manifest.permission.ACCESS_BACKGROUND_LOCATION,
+            // Contacts for the parents' safe list and contact management; accounts to add to Google.
+            android.Manifest.permission.READ_CONTACTS,
+            android.Manifest.permission.WRITE_CONTACTS,
+            android.Manifest.permission.GET_ACCOUNTS,
+            // The call log for parents; Android may refuse this one to a device owner (restricted).
+            android.Manifest.permission.READ_CALL_LOG,
+            android.Manifest.permission.READ_PHONE_STATE,
     };
 
     /** Lifted while a parent has unlocked with the PIN. */
@@ -197,6 +204,18 @@ public final class Policy {
         return System.currentTimeMillis() < prefs(c).getLong("parent_until", 0);
     }
 
+    /**
+     * Turns parent mode on until {@code untilMs} (0 turns it off), re-applies the policy, and brings the
+     * home screen forward so it leaves or enters lock task and shows or hides the parent bar.
+     */
+    static void setParentMode(Context c, long untilMs) {
+        prefs(c).edit().putLong("parent_until", untilMs).apply();
+        apply(c);
+        c.startActivity(new Intent(c, HomeActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                .putExtra("parent_changed", true));
+    }
+
     /** Re-apply everything. Call often. */
     static synchronized void apply(Context c) {
         if (!isOwner(c)) {
@@ -263,11 +282,21 @@ public final class Policy {
         }
 
         // 4. Hide every launchable app that isn't allowed.
-        // Scheduled apps stay installed-visible outside their hours: the lock task allowlist already stops
-        // them opening, and hiding would kill them nightly (dropping reminders, alarms and backups).
+        // Scheduled apps aren't hidden outside their hours (hiding would wipe them from the launcher state
+        // every night); instead they're suspended: closed, can't open, no notifications or sounds.
         Set<String> keep = new LinkedHashSet<>(lockPkgs);
         keep.addAll(Schedule.masks(c).keySet());
         hideApps(c, dpm, a, keep);
+
+        // 5. Suspend scheduled apps that aren't usable right now (out of hours or paused), unless allowed
+        //    for a while or a parent has unlocked the device.
+        Set<String> suspend = new LinkedHashSet<>();
+        if (!parent) {
+            for (String p : Schedule.masks(c).keySet()) {
+                if (!lockPkgs.contains(p) && !NEVER_SUSPEND.contains(p)) suspend.add(p);
+            }
+        }
+        suspendApps(c, dpm, a, suspend);
 
         Log.i(TAG, "applied; parent=" + parent + " lockPkgs=" + lockPkgs);
         // Let an open home screen redraw right away (new grant, schedule change) instead of on its next tick.
@@ -286,6 +315,33 @@ public final class Policy {
             } catch (Exception e) {
                 Log.w(TAG, "grant " + perm + ": " + e);
             }
+        }
+    }
+
+    /**
+     * Never suspended, even when unticked for a situation: a suspended dialer can't show incoming calls, and
+     * a suspended clock wouldn't ring a morning alarm during bedtime.
+     */
+    private static final Set<String> NEVER_SUSPEND = new java.util.HashSet<>(Arrays.asList(
+            "com.google.android.dialer", "com.android.dialer",
+            "com.google.android.deskclock", "com.android.deskclock"));
+
+    /** Suspends exactly {@code want} among the packages this app suspends, releasing the rest. */
+    private static void suspendApps(Context c, DevicePolicyManager dpm, ComponentName a, Set<String> want) {
+        Set<String> was = new LinkedHashSet<>();
+        for (String p : prefs(c).getString("suspended_by_us", "").split(",")) if (!p.isEmpty()) was.add(p);
+        Set<String> release = new LinkedHashSet<>(was);
+        release.removeAll(want);
+        try {
+            if (!release.isEmpty()) dpm.setPackagesSuspended(a, release.toArray(new String[0]), false);
+            Set<String> now = new LinkedHashSet<>(want);
+            if (!want.isEmpty()) {
+                String[] failed = dpm.setPackagesSuspended(a, want.toArray(new String[0]), true);
+                now.removeAll(Arrays.asList(failed));
+            }
+            prefs(c).edit().putString("suspended_by_us", String.join(",", now)).apply();
+        } catch (Exception e) {
+            Log.w(TAG, "suspend: " + e);
         }
     }
 
@@ -353,6 +409,7 @@ public final class Policy {
     static void releaseAll(Context c) {
         DevicePolicyManager dpm = dpm(c);
         ComponentName a = admin(c);
+        suspendApps(c, dpm, a, new LinkedHashSet<>());
         for (String r : RESTRICTIONS_LOCKED) {
             try { dpm.clearUserRestriction(a, r); } catch (Exception ignored) {}
         }

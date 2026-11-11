@@ -4,6 +4,14 @@ import android.app.TimePickerDialog
 import android.text.format.DateFormat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
@@ -54,6 +62,29 @@ data class ScheduleRule(val mode: String, val days: Int, val start: Int, val end
     }
 }
 
+/**
+ * The situation ("normal", "limited", "bedtime") these rules give at [ms], matching the device's
+ * Schedule.modeAt: bedtime wins over limited hours, overnight ranges spill into the next day, and
+ * start == end covers the whole day.
+ */
+fun List<ScheduleRule>.modeAt(ms: Long): String {
+    val cal = Calendar.getInstance().apply { timeInMillis = ms }
+    val day = (cal.get(Calendar.DAY_OF_WEEK) + 5) % 7 // Monday = 0
+    val minute = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+    fun has(r: ScheduleRule, d: Int) = r.days and (1 shl d) != 0
+    fun covers(r: ScheduleRule) = when {
+        r.start == r.end -> has(r, day)
+        r.start < r.end -> has(r, day) && minute >= r.start && minute < r.end
+        else -> (has(r, day) && minute >= r.start) || (has(r, (day + 6) % 7) && minute < r.end)
+    }
+    val hits = filter(::covers)
+    return when {
+        hits.any { it.mode == "bedtime" } -> "bedtime"
+        hits.isNotEmpty() -> "limited"
+        else -> "normal"
+    }
+}
+
 private val DAY_LETTERS = listOf("M", "T", "W", "T", "F", "S", "S")
 private val DAY_NAMES = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
@@ -90,65 +121,98 @@ private fun clock(minutes: Int): String {
 
 /**
  * "Apps and when they're allowed": one row per app on the device with a checkbox for each situation; no
- * ticks means it's only ever allowed for a while. "Edit list" hides apps that will never be allowed.
+ * ticks means it's only ever allowed for a while. Each row's ⋮ menu hides or uninstalls the app; hidden
+ * apps are listed below, only to be shown again.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun AppTableSection(dev: String, state: PhoneState) {
-    var editing by remember(dev) { mutableStateOf(false) }
-    // Every app on the device: scheduled ones in home-screen order, then the rest alphabetically.
-    val rows = state.home + state.others.sortedBy { state.label(it).lowercase() }
+    var showHidden by remember(dev) { mutableStateOf(false) }
+    var uninstalling by remember(dev) { mutableStateOf<String?>(null) }
+    uninstalling?.let { p ->
+        AlertDialog(
+            onDismissRequest = { uninstalling = null },
+            title = { Text("Uninstall ${state.label(p)}?") },
+            text = { Text("It's removed from their device with its data. This can't be undone; you'd have to install it again.") },
+            confirmButton = { TextButton(onClick = { Hub.uninstall(dev, p); uninstalling = null }) { Text("Uninstall") } },
+            dismissButton = { TextButton(onClick = { uninstalling = null }) { Text("Cancel") } })
+    }
+    // Every app on the device, Phone first and then A to Z, ticked or not.
+    val rows = phoneFirst(state, state.home + state.others)
     Section("Apps and when they're allowed") {
         if (!state.full) Text("Loading the device's settings… Changes are possible once they arrive.",
             style = MaterialTheme.typography.bodySmall)
-        Text(if (editing) "Hide apps you'll never allow; they leave this list and their Ask picker."
-            else "Ticked apps are on their home screen during that time. Apps with no ticks are only allowed for a while.",
+        Text("Ticked apps are on their home screen during that time. Apps with no ticks are only allowed for a while.",
             style = MaterialTheme.typography.bodySmall)
-        if (!editing) Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             Text("", Modifier.weight(1f))
             listOf("Normal", "Limited", "Bedtime").forEach {
-                Text(it, Modifier.width(64.dp), style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
+                Text(it, Modifier.width(CELL), style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
             }
+            Spacer(Modifier.width(MENU))
         }
         HorizontalDivider()
         rows.forEach { p ->
             val mask = if (p in state.home) state.masks[p] ?: DEFAULT_MASK else 0
             Row(verticalAlignment = Alignment.CenterVertically) {
                 AppName(dev, p, state.label(p), Modifier.weight(1f))
-                if (editing) {
-                    // Scheduled apps must be unticked first, so hiding never silently takes away a home app.
-                    if (mask == 0) TextButton(onClick = {
-                        Hub.offer(dev, p, false)
-                        Undo.offer("${state.label(p)} hidden") { Hub.offer(dev, p, true) }
-                    }) { Text("Hide") }
-                } else {
-                    listOf(MODE_NORMAL, MODE_LIMITED, MODE_BEDTIME).forEach { bit ->
-                        Row(Modifier.width(64.dp), horizontalArrangement = Arrangement.Center) {
-                            Checkbox(checked = mask and bit != 0, enabled = state.full, onCheckedChange = { on ->
-                                Hub.appModeBit(dev, p, bit, on)
-                                Undo.offer("${state.label(p)}: ${situationName(bit)} ${if (on) "allowed" else "not allowed"}") {
-                                    Hub.appModeBit(dev, p, bit, !on)
-                                }
-                            })
-                        }
+                listOf(MODE_NORMAL, MODE_LIMITED, MODE_BEDTIME).forEach { bit ->
+                    Row(Modifier.width(CELL), horizontalArrangement = Arrangement.Center) {
+                        Checkbox(checked = mask and bit != 0, enabled = state.full, onCheckedChange = { on ->
+                            Hub.appModeBit(dev, p, bit, on)
+                            Undo.offer("${state.label(p)}: ${situationName(bit)} ${if (on) "allowed" else "not allowed"}") {
+                                Hub.appModeBit(dev, p, bit, !on)
+                            }
+                        })
                     }
                 }
+                AppMenu(state, p, canHide = mask == 0, onHide = {
+                    Hub.offer(dev, p, false)
+                    Undo.offer("${state.label(p)} hidden") { Hub.offer(dev, p, true) }
+                }, onUninstall = { uninstalling = p })
             }
         }
-        if (editing && state.notOffered.isNotEmpty()) {
-            Text("Hidden", style = MaterialTheme.typography.titleSmall)
-            state.notOffered.sortedBy { state.label(it).lowercase() }.forEach { p ->
+        // Hidden apps live here only to be brought back.
+        if (state.notOffered.isNotEmpty()) {
+            TextButton(onClick = { showHidden = !showHidden }) {
+                Text(if (showHidden) "Hide the hidden apps" else "Hidden apps (${state.notOffered.size})")
+            }
+            if (showHidden) phoneFirst(state, state.notOffered).forEach { p ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     AppName(dev, p, state.label(p), Modifier.weight(1f))
-                    TextButton(onClick = {
+                    TextButton(enabled = state.full, onClick = {
                         Hub.offer(dev, p, true)
                         Undo.offer("${state.label(p)} shown") { Hub.offer(dev, p, false) }
                     }) { Text("Show") }
                 }
             }
         }
-        OutlinedButton(onClick = { editing = !editing }, enabled = state.full) {
-            Text(if (editing) "Done" else "Edit list")
+    }
+}
+
+/** Width of one Normal / Limited / Bedtime checkbox column, and of the row menu. */
+private val CELL = 56.dp
+private val MENU = 40.dp
+
+/**
+ * The ⋮ menu on an app row: Hide (only for apps with no ticks, so hiding never quietly takes an app off the
+ * home screen) and Uninstall (only for apps installed on the device).
+ */
+@Composable
+private fun AppMenu(state: PhoneState, pkg: String, canHide: Boolean, onHide: () -> Unit, onUninstall: () -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box(Modifier.width(MENU)) {
+        IconButton(onClick = { open = true }, enabled = state.full) {
+            Icon(Icons.Default.MoreVert, contentDescription = "More for ${state.label(pkg)}")
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text(if (canHide) "Hide" else "Hide (untick it first)") },
+                enabled = canHide,
+                onClick = { open = false; onHide() })
+            if (pkg in state.removable) DropdownMenuItem(
+                text = { Text("Uninstall…") },
+                onClick = { open = false; onUninstall() })
         }
     }
 }
@@ -156,13 +220,18 @@ internal fun AppTableSection(dev: String, state: PhoneState) {
 /** "Schedule": the limited-hours and bedtime ranges, with add and remove. */
 @Composable
 internal fun ScheduleSection(dev: String, state: PhoneState) {
-    var editing by remember(dev) { mutableStateOf<ScheduleRule?>(null) }
+    // The rule being added (index -1) or edited (its index in the device's list).
+    var editing by remember(dev) { mutableStateOf<Pair<Int, ScheduleRule>?>(null) }
+    val now = System.currentTimeMillis()
+    // Shown in the order they next happen, a running one first; edits still address the device's list.
+    val order = state.schedule.indices.sortedBy { state.schedule[it].nextStart(now) }
     Section("Schedule") {
         if (state.schedule.isEmpty()) {
             Text("No limited hours or bedtime yet, so it's normal hours all the time.",
                 style = MaterialTheme.typography.bodyMedium)
         }
-        state.schedule.forEachIndexed { i, r ->
+        order.forEach { i ->
+            val r = state.schedule[i]
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(modeLabel(r.mode), style = MaterialTheme.typography.titleSmall)
@@ -170,32 +239,64 @@ internal fun ScheduleSection(dev: String, state: PhoneState) {
                         else "${describeDays(r.days)}, ${clock(r.start)} to ${clock(r.end)}",
                         style = MaterialTheme.typography.bodyMedium)
                 }
-                TextButton(enabled = state.full, onClick = { Hub.setSchedule(dev, state.schedule.filterIndexed { j, _ -> j != i }) }) {
+                TextButton(enabled = state.full, onClick = { editing = i to r }) { Text("Edit") }
+                TextButton(enabled = state.full, onClick = {
+                    val before = state.schedule
+                    Hub.setSchedule(dev, before.filterIndexed { j, _ -> j != i })
+                    Undo.offer("${modeLabel(r.mode)} removed") { Hub.setSchedule(dev, before) }
+                }) {
                     Text("Remove")
                 }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            // Edits replace the whole schedule, so they wait until the phone's current one has arrived.
-            OutlinedButton(enabled = state.full, onClick = { editing = ScheduleRule("limited", 0x1f, 8 * 60 + 30, 15 * 60 + 15) }) {
+            // Edits replace the whole schedule, so they wait until the device's current one has arrived.
+            OutlinedButton(enabled = state.full, onClick = { editing = -1 to ScheduleRule("limited", 0x1f, 8 * 60 + 30, 15 * 60 + 15) }) {
                 Text("Add limited hours")
             }
-            OutlinedButton(enabled = state.full, onClick = { editing = ScheduleRule("bedtime", 0x7f, 21 * 60 + 30, 7 * 60) }) {
+            OutlinedButton(enabled = state.full, onClick = { editing = -1 to ScheduleRule("bedtime", 0x7f, 21 * 60 + 30, 7 * 60) }) {
                 Text("Add bedtime")
             }
         }
     }
-    editing?.let { draft ->
-        RuleDialog(draft, onSave = { Hub.setSchedule(dev, state.schedule + it); editing = null },
-            onDismiss = { editing = null })
+    editing?.let { (index, draft) ->
+        RuleDialog(draft, isNew = index < 0, onSave = { rule ->
+            val before = state.schedule
+            val after = if (index < 0) before + rule else before.mapIndexed { j, r -> if (j == index) rule else r }
+            Hub.setSchedule(dev, after)
+            Undo.offer("${modeLabel(rule.mode)} ${if (index < 0) "added" else "changed"}") { Hub.setSchedule(dev, before) }
+            editing = null
+        }, onDismiss = { editing = null })
     }
+}
+
+/**
+ * When this rule next starts, in ms; [now] itself if it is running at that moment, so active ones sort
+ * first. Overnight rules count from their evening start; all-day rules from midnight.
+ */
+internal fun ScheduleRule.nextStart(now: Long): Long {
+    if (listOf(this).modeAt(now) != "normal") return now
+    val cal = Calendar.getInstance().apply { timeInMillis = now }
+    for (offset in 0..7) {
+        val day = Calendar.getInstance().apply {
+            timeInMillis = now
+            add(Calendar.DAY_OF_MONTH, offset)
+            set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+        }
+        val weekday = (day.get(Calendar.DAY_OF_WEEK) + 5) % 7
+        if (days and (1 shl weekday) == 0) continue
+        val startMs = day.timeInMillis + (if (start == end) 0 else start) * 60_000L
+        if (startMs >= cal.timeInMillis) return startMs
+    }
+    return Long.MAX_VALUE
 }
 
 /** Edits a new rule's days and times. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun RuleDialog(draft: ScheduleRule, onSave: (ScheduleRule) -> Unit, onDismiss: () -> Unit) {
+private fun RuleDialog(draft: ScheduleRule, isNew: Boolean, onSave: (ScheduleRule) -> Unit, onDismiss: () -> Unit) {
     val ctx = LocalContext.current
+    var mode by remember { mutableStateOf(draft.mode) }
     var days by remember { mutableIntStateOf(draft.days) }
     var start by remember { mutableIntStateOf(draft.start) }
     var end by remember { mutableIntStateOf(draft.end) }
@@ -205,9 +306,14 @@ private fun RuleDialog(draft: ScheduleRule, onSave: (ScheduleRule) -> Unit, onDi
     }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add ${modeLabel(draft.mode).lowercase()}") },
+        title = { Text(if (isNew) "Add ${modeLabel(mode).lowercase()}" else "Edit ${modeLabel(mode).lowercase()}") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                // Which situation this range is; editable, so a range can switch between the two.
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = mode == "limited", onClick = { mode = "limited" }, label = { Text("Limited hours") })
+                    FilterChip(selected = mode == "bedtime", onClick = { mode = "bedtime" }, label = { Text("Bedtime") })
+                }
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     DAY_LETTERS.forEachIndexed { i, l ->
                         FilterChip(selected = days and (1 shl i) != 0, onClick = { days = days xor (1 shl i) },
@@ -229,8 +335,8 @@ private fun RuleDialog(draft: ScheduleRule, onSave: (ScheduleRule) -> Unit, onDi
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSave(draft.copy(days = days, start = start, end = end)) },
-                enabled = days != 0) { Text("Add") }
+            TextButton(onClick = { onSave(draft.copy(mode = mode, days = days, start = start, end = end)) },
+                enabled = days != 0) { Text(if (isNew) "Add" else "Save") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }

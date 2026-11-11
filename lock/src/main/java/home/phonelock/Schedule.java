@@ -189,24 +189,66 @@ final class Schedule {
         return limited ? LIMITED : NORMAL;
     }
 
-    static int currentMode(Context c) {
-        return modeAt(rules(c), Calendar.getInstance());
+    // ---------- manual situation ----------
+
+    /** Manually started situation ({@link #LIMITED} or {@link #BEDTIME}) still running, else 0. */
+    static int overrideMode(Context c) {
+        return System.currentTimeMillis() < overrideUntil(c) ? Policy.prefs(c).getInt("override_mode", 0) : 0;
+    }
+
+    static long overrideUntil(Context c) {
+        return Policy.prefs(c).getLong("override_until", 0);
     }
 
     /**
-     * When the current situation next changes, in ms since the epoch, or 0 if it never does (no rules).
-     * Steps minute by minute over the coming week, which is cheap enough to do on each call.
+     * Starts limited hours or bedtime by hand until {@code until} (ms); any other mode ends it. It can only add
+     * restrictions: where the schedule is stricter (bedtime starting during manual limited hours) the
+     * schedule wins, and when it ends the schedule applies again.
+     */
+    static void setOverride(Context c, int mode, long until) {
+        if (mode != LIMITED && mode != BEDTIME) {
+            mode = 0;
+            until = 0;
+        }
+        Policy.prefs(c).edit().putInt("override_mode", mode).putLong("override_until", until).commit();
+    }
+
+    /** The stricter of two situations: bedtime over limited hours over normal (the bit values are ordered). */
+    private static int stricter(int a, int b) {
+        return Math.max(a, b);
+    }
+
+    /** The situation at {@code ms}: the schedule, made stricter by a manual situation while it runs. */
+    private static int modeAt(List<Rule> rules, int manual, long manualUntil, long ms) {
+        Calendar cal = Calendar.getInstance();
+        cal.setTimeInMillis(ms);
+        int m = modeAt(rules, cal);
+        return ms < manualUntil ? stricter(m, manual) : m;
+    }
+
+    static int currentMode(Context c) {
+        return stricter(modeAt(rules(c), Calendar.getInstance()), overrideMode(c));
+    }
+
+    /**
+     * When the current situation next changes, in ms since the epoch, or 0 if it never does. Checks each
+     * minute of the coming week, plus the exact moment a manual situation ends.
      */
     static long currentModeUntil(Context c) {
         List<Rule> rules = rules(c);
-        if (rules.isEmpty()) return 0;
-        Calendar cal = Calendar.getInstance();
-        int now = modeAt(rules, cal);
-        cal.set(Calendar.SECOND, 0);
-        cal.set(Calendar.MILLISECOND, 0);
+        int manual = overrideMode(c);
+        long manualUntil = manual == 0 ? 0 : overrideUntil(c);
+        if (rules.isEmpty() && manual == 0) return 0;
+        long now = System.currentTimeMillis();
+        int current = modeAt(rules, manual, manualUntil, now);
+        long t = now - now % 60_000;
         for (int i = 0; i < 8 * 1440; i++) {
-            cal.add(Calendar.MINUTE, 1);
-            if (modeAt(rules, cal) != now) return cal.getTimeInMillis();
+            long next = t + 60_000;
+            if (manualUntil > t && manualUntil <= next && modeAt(rules, manual, manualUntil, manualUntil) != current) {
+                return manualUntil;
+            }
+            if (modeAt(rules, manual, manualUntil, next) != current) return next;
+            t = next;
         }
         return 0;
     }

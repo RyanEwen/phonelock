@@ -16,3 +16,9 @@ cfg name "$(get name)"
 $A $S shell "settings put secure enabled_accessibility_services home.phonelock/home.phonelock.ScreenService; settings put secure accessibility_enabled 1"
 # Ring: Do Not Disturb access, so a ring can get through "Total silence".
 $A $S shell cmd notification allow_dnd home.phonelock
+# Calls: see outgoing calls (safe list) and screen incoming ones; read the call log for parents.
+$A $S shell cmd role add-role-holder android.app.role.CALL_REDIRECTION home.phonelock
+$A $S shell cmd role add-role-holder android.app.role.CALL_SCREENING home.phonelock
+$A $S shell pm grant home.phonelock android.permission.READ_CALL_LOG || true
+# Files: "All files access" for parent file management.
+$A $S shell appops set home.phonelock MANAGE_EXTERNAL_STORAGE allow

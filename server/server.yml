@@ -8,8 +8,9 @@ behind-proxy: true
 cache-file: /var/cache/ntfy/cache.db
 cache-duration: 24h
 attachment-cache-dir: /var/cache/ntfy/attachments
-attachment-file-size-limit: 2M
-attachment-total-size-limit: 2G
+# Files from parent file management go up to 50 MB (Cloudflare's upload cap is 100 MB).
+attachment-file-size-limit: 50M
+attachment-total-size-limit: 10G
 attachment-expiry-duration: 3h
 
 # Firebase Cloud Messaging (each message also goes to the FCM topic of the same name, so the parent app
@@ -21,8 +22,8 @@ visitor-request-limit-burst: 120
 visitor-request-limit-replenish: 2s
 visitor-message-daily-limit: 5000
 visitor-subscription-limit: 60
-visitor-attachment-total-size-limit: 200M
-visitor-attachment-daily-bandwidth-limit: 1G
+visitor-attachment-total-size-limit: 1G
+visitor-attachment-daily-bandwidth-limit: 4G
 
 # No web UI, no e-mail, no calls: just the relay.
 web-root: disable

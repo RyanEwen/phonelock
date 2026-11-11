@@ -81,20 +81,11 @@ public class ConfigReceiver extends BroadcastReceiver {
                 return "allow_debugging=" + "on".equals(value);
             case "parent": {
                 int mins = value == null ? 30 : Integer.parseInt(value);
-                Policy.prefs(c).edit()
-                        .putLong("parent_until", System.currentTimeMillis() + mins * 60_000L).apply();
-                Policy.apply(c);
-                c.startActivity(new Intent(c, HomeActivity.class)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        .putExtra("parent_changed", true));
+                Policy.setParentMode(c, System.currentTimeMillis() + mins * 60_000L);
                 return "parent mode " + mins + " min";
             }
             case "lock":
-                Policy.prefs(c).edit().putLong("parent_until", 0).apply();
-                Policy.apply(c);
-                c.startActivity(new Intent(c, HomeActivity.class)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        .putExtra("parent_changed", true));
+                Policy.setParentMode(c, 0);
                 return "locked";
             case "apply":
                 Policy.apply(c);

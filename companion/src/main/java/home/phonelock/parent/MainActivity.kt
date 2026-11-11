@@ -196,6 +196,14 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { delay(15_000); now = System.currentTimeMillis() } }
     var menu by remember { mutableStateOf(false) }
+    // Calls, Contacts or Files open as their own page over the main screen.
+    var page by remember(dev) { mutableStateOf<String?>(null) }
+    var startingMode by remember(dev) { mutableStateOf(false) }
+    when (page) {
+        "calls" -> { CallsScreen(dev, state) { page = null }; return }
+        "contacts" -> { ContactsScreen(dev, state) { page = null }; return }
+        "files" -> { FilesScreen(dev, state) { page = null }; return }
+    }
 
     Column(Modifier.safeDrawingPadding().padding(16.dp).verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -209,7 +217,11 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
             TextButton(onClick = onAdd) { Text("+ Add device") }
         }
         val device = devices.firstOrNull { it.id == dev }
-        PhoneHeader(name, state, connected || (device != null && Push.covers(device)), now, onRefresh = { Hub.refresh(dev) }, onMenu = { menu = true })
+        PhoneHeader(name, state, connected || (device != null && Push.covers(device)), now, onRefresh = { Hub.refresh(dev) }, onMenu = { menu = true },
+            onLockNow = { Hub.parentMode(dev, 0) },
+            onStartMode = { startingMode = true }, onEndMode = { Hub.endMode(dev) })
+        if (startingMode) StartModeDialog(name, onPick = { mode, mins -> Hub.startMode(dev, mode, mins); startingMode = false },
+            onDismiss = { startingMode = false })
         BatteryHint()
 
         if (requests.isNotEmpty()) Section("Requests") {
@@ -230,7 +242,7 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
             }
         }
 
-        FindAndReach(dev, name, state, now)
+        FindAndReach(dev, name, state, now) { page = it }
 
         AllowedNowSection(dev, state, now)
         NotAllowedNowSection(dev, state)
@@ -238,7 +250,7 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
         ScheduleSection(dev, state)
 
         if (events.isNotEmpty()) Section("Activity") {
-            events.take(20).forEach { e ->
+            CappedList(events, key = dev) { e ->
                 Row {
                     Text(time(e.ts), Modifier.width(72.dp), style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -257,6 +269,12 @@ private fun PhoneMenu(dev: String, name: String, close: () -> Unit) {
     var you by remember { mutableStateOf(Hub.parentName.value) }
     var confirmRemove by remember { mutableStateOf(false) }
     var sharing by remember { mutableStateOf(false) }
+    var parentMode by remember { mutableStateOf(false) }
+    var changingPin by remember { mutableStateOf(false) }
+    if (parentMode) ParentModeDialog(name, onPick = { Hub.parentMode(dev, it); parentMode = false; close() },
+        onDismiss = { parentMode = false })
+    if (changingPin) PinDialog(onSave = { Hub.setPin(dev, it); changingPin = false; close() },
+        onDismiss = { changingPin = false })
     AlertDialog(
         onDismissRequest = close,
         title = { Text("Settings") },
@@ -265,6 +283,8 @@ private fun PhoneMenu(dev: String, name: String, close: () -> Unit) {
                 OutlinedTextField(rename, { rename = it }, label = { Text("Child's device name") }, singleLine = true)
                 OutlinedTextField(you, { you = it }, label = { Text("Your name") }, singleLine = true,
                     supportingText = { Text("Shown on their device") })
+                TextButton(onClick = { parentMode = true }) { Text("Parent mode…") }
+                TextButton(onClick = { changingPin = true }) { Text("Change parent PIN…") }
                 TextButton(onClick = { sharing = true }) { Text("Share with another parent…") }
                 TextButton(onClick = { confirmRemove = true }) { Text("Remove this device…") }
             }

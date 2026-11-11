@@ -28,8 +28,8 @@ import java.util.List;
 
 public class HomeActivity extends Activity {
     private final Handler h = new Handler(Looper.getMainLooper());
-    private AppGrid homeGrid, allowedGrid;
-    private TextView allowedHeading;
+    private AppGrid homeGrid, allowedGrid, pausedGrid;
+    private TextView allowedHeading, pausedHeading;
     /** "Bedtime until 7:00 AM" under the date; hidden in normal hours. */
     private TextView modeText;
     /** Situation the screen was last built for, so the tick refreshes when it changes. */
@@ -147,23 +147,18 @@ public class HomeActivity extends Activity {
         pbl.topMargin = dp(12);
         root.addView(parentBar, pbl);
 
-        // Home apps, then (when there are any) the apps a parent has allowed for now, in one scroll view.
+        // Home apps, then (when there are any) apps a parent allowed or paused for now, in one scroll view.
         android.widget.ScrollView scroll = new android.widget.ScrollView(this);
         LinearLayout sections = new LinearLayout(this);
         sections.setOrientation(LinearLayout.VERTICAL);
         homeGrid = new AppGrid(this);
         sections.addView(homeGrid, new LinearLayout.LayoutParams(-1, -2));
-        allowedHeading = new TextView(this);
-        allowedHeading.setText("Allowed for now");
-        allowedHeading.setTextColor(Color.rgb(170, 176, 190));
-        allowedHeading.setTextSize(14);
-        LinearLayout.LayoutParams hl = new LinearLayout.LayoutParams(-1, -2);
-        hl.topMargin = dp(36);
-        hl.bottomMargin = dp(12);
-        hl.leftMargin = dp(8);
-        sections.addView(allowedHeading, hl);
+        allowedHeading = sectionHeading(sections, "Allowed for now");
         allowedGrid = new AppGrid(this);
         sections.addView(allowedGrid, new LinearLayout.LayoutParams(-1, -2));
+        pausedHeading = sectionHeading(sections, "Paused for now");
+        pausedGrid = new AppGrid(this);
+        sections.addView(pausedGrid, new LinearLayout.LayoutParams(-1, -2));
         scroll.addView(sections, new android.widget.FrameLayout.LayoutParams(-1, -2));
         LinearLayout.LayoutParams gl = new LinearLayout.LayoutParams(-1, 0, 1);
         gl.topMargin = dp(32);
@@ -318,27 +313,62 @@ public class HomeActivity extends Activity {
             Toast.makeText(this, "No PIN set", Toast.LENGTH_SHORT).show();
             return;
         }
+        // A clear PIN field: big centred dots, a "PIN" hint, the number keyboard up straight away,
+        // and the keyboard's Done key unlocks.
         EditText in = new EditText(this);
         in.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        in.setHint("PIN");
         in.setGravity(Gravity.CENTER);
-        new AlertDialog.Builder(this)
+        in.setTextSize(28);
+        in.setLetterSpacing(0.3f);
+        in.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(8)});
+        in.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
+        LinearLayout box = new LinearLayout(this);
+        box.setPadding(dp(24), dp(8), dp(24), 0);
+        box.addView(in, new LinearLayout.LayoutParams(-1, -2));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle("Parent PIN")
-                .setView(in)
-                .setPositiveButton("Unlock", (d, w) -> {
-                    long r = Policy.checkPin(this, in.getText().toString());
-                    if (r == 0) {
-                        Policy.prefs(this).edit()
-                                .putLong("parent_until", System.currentTimeMillis() + 15 * 60_000L).apply();
-                        Policy.apply(this);
-                        enforceLockTask();
-                    } else if (r > 0) {
-                        Toast.makeText(this, "Try again in " + r + " s", Toast.LENGTH_LONG).show();
-                    } else {
-                        Toast.makeText(this, "Wrong PIN", Toast.LENGTH_SHORT).show();
-                    }
-                })
+                .setView(box)
+                .setPositiveButton("Unlock", (d, w) -> unlockWith(in.getText().toString()))
                 .setNegativeButton("Cancel", null)
-                .show();
+                .create();
+        in.setOnEditorActionListener((v, action, ev) -> {
+            dialog.dismiss();
+            unlockWith(in.getText().toString());
+            return true;
+        });
+        dialog.getWindow().setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+        dialog.show();
+        in.requestFocus();
+    }
+
+    /** Phone apps (dialers) always lead the home screen; everything else follows alphabetically. */
+    private static final java.util.Set<String> DIALERS = new java.util.HashSet<>(java.util.Arrays.asList(
+            "com.google.android.dialer", "com.android.dialer"));
+
+    private static List<AppGrid.Entry> phoneFirstThenByName(List<AppGrid.Entry> apps) {
+        apps.sort((a, b) -> {
+            boolean pa = DIALERS.contains(a.pkg), pb = DIALERS.contains(b.pkg);
+            if (pa != pb) return pa ? -1 : 1;
+            return a.label.toString().compareToIgnoreCase(b.label.toString());
+        });
+        return apps;
+    }
+
+    /** Checks the PIN and, if right, starts 15 minutes of parent mode; otherwise says why not. */
+    private void unlockWith(String pin) {
+        long r = Policy.checkPin(this, pin);
+        if (r == 0) {
+            Policy.prefs(this).edit()
+                    .putLong("parent_until", System.currentTimeMillis() + 15 * 60_000L).apply();
+            Policy.apply(this);
+            enforceLockTask();
+        } else if (r > 0) {
+            Toast.makeText(this, "Try again in " + r + " s", Toast.LENGTH_LONG).show();
+        } else {
+            Toast.makeText(this, "Wrong PIN", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void launch(String pkg) {
@@ -370,7 +400,7 @@ public class HomeActivity extends Activity {
         }
 
         List<String> scheduled = Schedule.allowedNow(this);
-        homeGrid.setApps(AppGrid.load(this, scheduled, true), e -> launch(e.pkg));
+        homeGrid.setApps(phoneFirstThenByName(AppGrid.load(this, scheduled, true)), e -> launch(e.pkg));
 
         java.util.Map<String, Long> grants = Grants.load(this);
         List<String> extra = new ArrayList<>();
@@ -378,9 +408,42 @@ public class HomeActivity extends Activity {
         List<AppGrid.Entry> allowed = AppGrid.load(this, extra, true);
         for (AppGrid.Entry e : allowed) e.note = "until " + Remote.time(this, grants.get(e.pkg));
         allowedGrid.setApps(allowed, e -> launch(e.pkg));
-        int vis = allowed.isEmpty() ? View.GONE : View.VISIBLE;
-        allowedHeading.setVisibility(vis);
-        allowedGrid.setVisibility(vis);
+        showIf(!allowed.isEmpty(), allowedHeading, allowedGrid);
+
+        // Apps a parent paused that would otherwise be available now: greyed out, tap says until when.
+        java.util.Map<String, Long> blocks = Grants.loadBlocks(this);
+        List<String> pausedPkgs = new ArrayList<>();
+        java.util.Map<String, Integer> masks = Schedule.masks(this);
+        for (String p : blocks.keySet()) {
+            Integer m = masks.get(p);
+            if (m != null && (m & mode) != 0) pausedPkgs.add(p);
+        }
+        List<AppGrid.Entry> paused = phoneFirstThenByName(AppGrid.load(this, pausedPkgs, false));
+        for (AppGrid.Entry e : paused) {
+            e.note = "until " + Remote.time(this, blocks.get(e.pkg));
+            e.dimmed = true;
+        }
+        pausedGrid.setApps(paused, e -> Toast.makeText(this,
+                e.label + " is paused until " + Remote.time(this, blocks.get(e.pkg)), Toast.LENGTH_SHORT).show());
+        showIf(!paused.isEmpty(), pausedHeading, pausedGrid);
+    }
+
+    private static void showIf(boolean show, View... views) {
+        for (View v : views) v.setVisibility(show ? View.VISIBLE : View.GONE);
+    }
+
+    /** A small grey section title ("Allowed for now", "Paused for now") added to {@code parent}. */
+    private TextView sectionHeading(LinearLayout parent, String text) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextColor(Color.rgb(170, 176, 190));
+        t.setTextSize(14);
+        LinearLayout.LayoutParams hl = new LinearLayout.LayoutParams(-1, -2);
+        hl.topMargin = dp(36);
+        hl.bottomMargin = dp(12);
+        hl.leftMargin = dp(8);
+        parent.addView(t, hl);
+        return t;
     }
 
     private Button button(String text, View.OnClickListener l) {

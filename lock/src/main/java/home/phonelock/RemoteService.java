@@ -58,6 +58,7 @@ public class RemoteService extends Service {
                 .build();
         startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         getMainExecutor().execute(() -> Ringer.recover(this));
+        CallLogFeed.watch(this);
         if (!running) {
             running = true;
             listener = new Thread(this::listenLoop, "ntfy");
@@ -213,10 +214,12 @@ public class RemoteService extends Service {
             Policy.prefs(this).edit().putString("ntfy_last_id", id).apply();
             String msg = o.optString("message", "").trim();
             if (msg.isEmpty() || msg.startsWith(REPLY_PREFIX)) return;
-            // Ignore anything older than 6 hours (phone was off a long time).
+            // Ignore anything older than a day (the hub's cache); Remote applies tighter limits per type.
             long sent = o.optLong("time", 0) * 1000;
-            if (sent > 0 && System.currentTimeMillis() - sent > 6 * 3600_000L) return;
-            Remote.handle(this, msg);
+            if (sent > 0 && System.currentTimeMillis() - sent > 24 * 3600_000L) return;
+            JSONObject att = o.optJSONObject("attachment");
+            String url = att == null ? null : att.optString("url", null);
+            Remote.handle(this, msg, url);
         } catch (Exception e) {
             Log.w(Policy.TAG, "bad ntfy line: " + e);
         }

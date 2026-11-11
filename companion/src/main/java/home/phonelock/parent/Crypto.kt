@@ -36,6 +36,15 @@ object Crypto {
         null
     }
 
+    /** Encrypts a binary attachment: raw iv[12] || ct+tag with AAD [aad] (see [openBytes]). */
+    fun sealBytes(key: ByteArray, data: ByteArray, aad: String): ByteArray {
+        val iv = ByteArray(12).also(rng::nextBytes)
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, iv))
+        c.updateAAD(aad.toByteArray(Charsets.US_ASCII))
+        return iv + c.doFinal(data)
+    }
+
     /**
      * Decrypts a binary attachment (raw iv[12] || ct+tag, see lock/.../Crypto.java sealBytes) whose AAD is
      * [aad]. Returns null if it wasn't sealed with this key and AAD.

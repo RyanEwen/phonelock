@@ -45,6 +45,18 @@ data class PhoneState(
     val schedule: List<ScheduleRule> = emptyList(),
     /** Normally allowed apps a parent blocked for a while: package -> end time. */
     val blocks: Map<String, Long> = emptyMap(),
+    /** A situation started by hand ("limited" / "bedtime") and when it ends; empty when none. */
+    val manualMode: String = "",
+    val manualUntil: Long = 0,
+    /** Apps that can be uninstalled (installed on the device, not built in). */
+    val removable: Set<String> = emptySet(),
+    /** When parent mode ends on the device (0 when it's off). */
+    val parentUntil: Long = 0,
+    /** Call limits and safe list (from a full state). */
+    val calls: CallSettings = CallSettings(),
+    /** What the device has allowed the lock app: file access, reading its call log. */
+    val canFiles: Boolean = false,
+    val canCallLog: Boolean = false,
     /** True once a full state (with app lists, table and schedule) has arrived; editing waits for it. */
     val full: Boolean = false,
 ) {
@@ -61,6 +73,7 @@ class App : Application() {
         Hub.init(this)
         AppIconCache.init(this)
         PhoneTools.init(this)
+        DeviceData.init(this)
         Push.init(this)
         Push.sync(Hub.devices.value)
     }
@@ -273,8 +286,53 @@ object Hub {
     }
 
     /** Replaces the phone's weekly schedule. */
-    fun setSchedule(dev: String, rules: List<ScheduleRule>) =
+    fun setSchedule(dev: String, rules: List<ScheduleRule>) {
+        // Show it at once; the device's next state confirms (or corrects) it.
+        editState(dev) { it.copy(schedule = rules) }
         send(dev, msg("schedule").put("rules", ScheduleRule.toJson(rules)))
+    }
+
+    /**
+     * Unlocks Settings and the Play Store on [dev] for [minutes] (0 ends parent mode now). It also ends when
+     * the device's screen turns off.
+     */
+    fun parentMode(dev: String, minutes: Long) {
+        editState(dev) {
+            it.copy(parentMode = minutes > 0, parentUntil = if (minutes > 0) System.currentTimeMillis() + minutes * 60_000 else 0)
+        }
+        send(dev, msg("parentmode").put("minutes", minutes))
+    }
+
+    /**
+     * Starts limited hours or bedtime ([mode] "limited" / "bedtime") on [dev] for [minutes], on top of the
+     * schedule (the stricter one applies). Shows it at once; the device confirms.
+     */
+    fun startMode(dev: String, mode: String, minutes: Long) {
+        val until = System.currentTimeMillis() + minutes * 60_000
+        editState(dev) { st ->
+            val stricter = listOf(st.mode, mode).maxBy { modeBit(it) }
+            st.copy(manualMode = mode, manualUntil = until, mode = stricter, modeUntil = until)
+        }
+        send(dev, msg("mode").put("mode", mode).put("minutes", minutes))
+    }
+
+    /** Ends a manually started situation; the schedule applies again (the device reports what that is). */
+    fun endMode(dev: String) {
+        editState(dev) { it.copy(manualMode = "", manualUntil = 0) }
+        send(dev, msg("mode").put("mode", "none"))
+    }
+
+    /** Uninstalls [app] from [dev] (removes it and its data; only for apps the device reports removable). */
+    fun uninstall(dev: String, app: String) = send(dev, msg("uninstall").put("app", app))
+
+    /** Sets the parent PIN on [dev] (4 to 8 digits). */
+    fun setPin(dev: String, pin: String) = send(dev, msg("pin").put("pin", pin))
+
+    /** Replaces the device's call settings (limits and safe list), showing the change at once. */
+    fun setCalls(dev: String, calls: CallSettings) {
+        editState(dev) { it.copy(calls = calls) }
+        send(dev, msg("calls").put("limitOut", calls.limitOut).put("limitIn", calls.limitIn).put("safe", calls.safeJson()))
+    }
 
     /** Puts [app] on ([on]) or takes it off the phone's "Give access" list and the child's Ask picker. */
     fun offer(dev: String, app: String, on: Boolean) {
@@ -285,18 +343,33 @@ object Hub {
         send(dev, msg("offer").put("app", app).put("on", on))
     }
 
+    /** Longest sealed body sent inline; ntfy's message limit is 4096 bytes. */
+    private const val MAX_INLINE = 3800
+
     /** Seals [o] with [dev]'s key and posts it to the phone's topic, logging failures to its activity. */
     internal fun send(dev: String, o: JSONObject) {
         val d = _devices.value.firstOrNull { it.id == dev } ?: return
         thread {
             try {
-                val body = Crypto.seal(Crypto.key(d.secret), o.toString())
+                val key = Crypto.key(d.secret)
+                var body = Crypto.seal(key, o.toString())
                 val h = URL("${d.server}/${d.topic}").openConnection() as HttpURLConnection
                 h.requestMethod = "POST"
                 h.doOutput = true
                 h.connectTimeout = 15_000
-                h.readTimeout = 15_000
-                h.outputStream.use { it.write(body.toByteArray(Charsets.US_ASCII)) }
+                h.readTimeout = 30_000
+                if (body.length > MAX_INLINE) {
+                    // ntfy turns bodies over 4 KB into files the device wouldn't read: send a small "big"
+                    // message carrying this one as an encrypted attachment (see PROTOCOL.md).
+                    val wrapper = msg("big")
+                    val blob = Crypto.sealBytes(key, o.toString().toByteArray(), "phonelock/blob/${wrapper.getString("id")}")
+                    h.requestMethod = "PUT"
+                    h.setRequestProperty("Filename", "blob.bin")
+                    h.setRequestProperty("Message", Crypto.seal(key, wrapper.toString()))
+                    h.outputStream.use { it.write(blob) }
+                } else {
+                    h.outputStream.use { it.write(body.toByteArray(Charsets.US_ASCII)) }
+                }
                 val code = h.responseCode
                 h.disconnect()
                 if (code !in 200..299) addEvent(dev, "Couldn't send (HTTP $code)")
@@ -335,7 +408,8 @@ object Hub {
                 if (old != null && s.updated < old.updated) return
                 val merged = if (s.full || old == null) s
                     else s.copy(others = old.others, notOffered = old.notOffered, labels = old.labels + s.labels,
-                        masks = old.masks, schedule = old.schedule, full = old.full)
+                        masks = old.masks, schedule = old.schedule, full = old.full, calls = old.calls,
+                        canFiles = old.canFiles, canCallLog = old.canCallLog, removable = old.removable)
                 _states.update { it + (dev to merged) }
                 saveStates()
                 AppIconCache.ensure(d, merged.home + merged.others + merged.notOffered + merged.grants.keys)
@@ -371,6 +445,7 @@ object Hub {
             }
             "loc", "shot" -> if (from == "phone") PhoneTools.handle(d, m, attachmentUrl)
             "icons" -> if (from == "phone") AppIconCache.handle(d, m, attachmentUrl)
+            "calls", "contacts", "files", "file" -> if (from == "phone") DeviceData.handle(d, m, attachmentUrl)
             // Another parent answered a request.
             "grant", "deny" -> m.optString("req").takeIf { it.isNotEmpty() }?.let(::resolve)
         }
@@ -389,6 +464,13 @@ object Hub {
             m.optJSONObject("masks")?.let { o -> o.keys().asSequence().associateWith { o.getInt(it) } } ?: emptyMap(),
             ScheduleRule.listFrom(m.optJSONArray("schedule")),
             m.optJSONObject("blocks")?.let { o -> o.keys().asSequence().associateWith { o.getLong(it) } } ?: emptyMap(),
+            m.optJSONObject("manual")?.optString("mode") ?: "",
+            m.optJSONObject("manual")?.optLong("until") ?: 0,
+            arr("removable").toSet(),
+            m.optLong("parentUntil"),
+            CallSettings.from(m.optJSONObject("calls")),
+            m.optJSONObject("can")?.optBoolean("files") ?: false,
+            m.optJSONObject("can")?.optBoolean("calllog") ?: false,
             m.has("others") || m.optBoolean("full"))
     }
 
@@ -399,7 +481,9 @@ object Hub {
         .put("notOffered", JSONArray(s.notOffered))
         .put("mode", s.mode).put("modeUntil", s.modeUntil)
         .put("masks", JSONObject(s.masks as Map<*, *>)).put("schedule", ScheduleRule.toJson(s.schedule))
-        .put("blocks", JSONObject(s.blocks as Map<*, *>)).put("full", s.full)
+        .put("blocks", JSONObject(s.blocks as Map<*, *>)).put("manual", JSONObject().put("mode", s.manualMode).put("until", s.manualUntil))
+        .put("removable", JSONArray(s.removable.toList())).put("parentUntil", s.parentUntil).put("calls", s.calls.toJson())
+        .put("can", JSONObject().put("files", s.canFiles).put("calllog", s.canCallLog)).put("full", s.full)
 
     private fun saveStates() {
         val o = JSONObject()
@@ -422,8 +506,11 @@ object Hub {
         prefs.edit().putString("requests", a.toString()).apply()
     }
 
+    /** Activity entries kept per device; the screen shows a few at a time (CappedList). */
+    private const val MAX_EVENTS = 200
+
     fun addEvent(dev: String, text: String, ts: Long = System.currentTimeMillis()) {
-        _events.update { m -> m + (dev to (listOf(Event(ts, text)) + (m[dev] ?: emptyList())).take(50)) }
+        _events.update { m -> m + (dev to (listOf(Event(ts, text)) + (m[dev] ?: emptyList())).take(MAX_EVENTS)) }
         saveEvents()
     }
 
