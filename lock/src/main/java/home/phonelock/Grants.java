@@ -24,10 +24,29 @@ public final class Grants {
     }
     static final String SMS_APP = "com.google.android.apps.messaging";
 
+    /** Live temporary grants: package -> end time (ms). */
     static Map<String, Long> load(Context c) {
+        return loadTimed(c, "grants");
+    }
+
+    static void save(Context c, Map<String, Long> m) {
+        saveTimed(c, "grants", m);
+    }
+
+    /** Live temporary blocks of normally allowed apps: package -> end time (ms). */
+    static Map<String, Long> loadBlocks(Context c) {
+        return loadTimed(c, "blocks");
+    }
+
+    static void saveBlocks(Context c, Map<String, Long> m) {
+        saveTimed(c, "blocks", m);
+    }
+
+    /** Reads a "pkg=untilMs,…" preference, dropping entries that have ended. */
+    private static Map<String, Long> loadTimed(Context c, String key) {
         Map<String, Long> m = new LinkedHashMap<>();
         long now = System.currentTimeMillis();
-        for (String e : Policy.prefs(c).getString("grants", "").split(",")) {
+        for (String e : Policy.prefs(c).getString(key, "").split(",")) {
             int i = e.indexOf('=');
             if (i <= 0) continue;
             try {
@@ -38,13 +57,13 @@ public final class Grants {
         return m;
     }
 
-    static void save(Context c, Map<String, Long> m) {
+    private static void saveTimed(Context c, String key, Map<String, Long> m) {
         StringBuilder sb = new StringBuilder();
         for (Map.Entry<String, Long> e : m.entrySet()) {
             if (sb.length() > 0) sb.append(',');
             sb.append(e.getKey()).append('=').append(e.getValue());
         }
-        Policy.prefs(c).edit().putString("grants", sb.toString()).apply();
+        Policy.prefs(c).edit().putString(key, sb.toString()).apply();
     }
 
     /** Earliest expiry, or 0 if none. */

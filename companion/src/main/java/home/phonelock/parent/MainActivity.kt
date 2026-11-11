@@ -15,6 +15,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -76,7 +77,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val ctx = LocalContext.current
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)) {
-                Surface(Modifier.fillMaxSize()) {
+                Surface(Modifier.fillMaxSize()) { Box(Modifier.fillMaxSize()) {
                     val devices by Hub.devices.collectAsState()
                     var adding by remember { mutableStateOf(false) }
                     val link by pendingLink
@@ -90,7 +91,8 @@ class MainActivity : ComponentActivity() {
                         val sel = selected.value?.takeIf { s -> devices.any { it.id == s } } ?: devices.first().id
                         MainScreen(devices, sel, onSelect = { selected.value = it }, onAdd = { adding = true })
                     }
-                }
+                    with(Undo) { UndoHost() }
+                } }
             }
         }
     }
@@ -115,6 +117,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         Hub.refreshStale()
+        Push.catchUp()
     }
 }
 
@@ -230,7 +233,7 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
         FindAndReach(dev, name, state, now)
 
         AllowedNowSection(dev, state, now)
-        AllowForAWhileSection(dev, state)
+        NotAllowedNowSection(dev, state)
         AppTableSection(dev, state)
         ScheduleSection(dev, state)
 

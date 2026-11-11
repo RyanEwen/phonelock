@@ -64,6 +64,13 @@ fun modeLabel(mode: String) = when (mode) {
     else -> "Normal"
 }
 
+/** "normal hours", "limited hours", "bedtime" for one situation bit, for messages. */
+private fun situationName(bit: Int) = when (bit) {
+    MODE_BEDTIME -> "bedtime"
+    MODE_LIMITED -> "limited hours"
+    else -> "normal hours"
+}
+
 /** "Weekdays", "Every day", "Mon, Wed, Fri", … */
 private fun describeDays(days: Int): String = when (days and 0x7f) {
     0x7f -> "Every day"
@@ -82,41 +89,67 @@ private fun clock(minutes: Int): String {
 }
 
 /**
- * "Apps and when": one row per scheduled app with a checkbox for each situation. Unticking all three leaves
- * the app to "Allow for a while"; "Add an app…" puts one on with normal and limited hours ticked.
+ * "Apps and when they're allowed": one row per app on the device with a checkbox for each situation; no
+ * ticks means it's only ever allowed for a while. "Edit list" hides apps that will never be allowed.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun AppTableSection(dev: String, state: PhoneState) {
-    var adding by remember(dev) { mutableStateOf(false) }
+    var editing by remember(dev) { mutableStateOf(false) }
+    // Every app on the device: scheduled ones in home-screen order, then the rest alphabetically.
+    val rows = state.home + state.others.sortedBy { state.label(it).lowercase() }
     Section("Apps and when they're allowed") {
         if (!state.full) Text("Loading the device's settings… Changes are possible once they arrive.",
             style = MaterialTheme.typography.bodySmall)
-        Text("Ticked apps are on their home screen during that time. Untick all three to allow it only for a while.",
+        Text(if (editing) "Hide apps you'll never allow; they leave this list and their Ask picker."
+            else "Ticked apps are on their home screen during that time. Apps with no ticks are only allowed for a while.",
             style = MaterialTheme.typography.bodySmall)
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        if (!editing) Row(verticalAlignment = Alignment.CenterVertically) {
             Text("", Modifier.weight(1f))
             listOf("Normal", "Limited", "Bedtime").forEach {
                 Text(it, Modifier.width(64.dp), style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
             }
         }
         HorizontalDivider()
-        state.home.forEach { p ->
-            val mask = state.masks[p] ?: DEFAULT_MASK
+        rows.forEach { p ->
+            val mask = if (p in state.home) state.masks[p] ?: DEFAULT_MASK else 0
             Row(verticalAlignment = Alignment.CenterVertically) {
                 AppName(dev, p, state.label(p), Modifier.weight(1f))
-                listOf(MODE_NORMAL, MODE_LIMITED, MODE_BEDTIME).forEach { bit ->
-                    Row(Modifier.width(64.dp), horizontalArrangement = Arrangement.Center) {
-                        Checkbox(checked = mask and bit != 0, enabled = state.full, onCheckedChange = { on ->
-                            Hub.appMode(dev, p, if (on) mask or bit else mask and bit.inv())
-                        })
+                if (editing) {
+                    // Scheduled apps must be unticked first, so hiding never silently takes away a home app.
+                    if (mask == 0) TextButton(onClick = {
+                        Hub.offer(dev, p, false)
+                        Undo.offer("${state.label(p)} hidden") { Hub.offer(dev, p, true) }
+                    }) { Text("Hide") }
+                } else {
+                    listOf(MODE_NORMAL, MODE_LIMITED, MODE_BEDTIME).forEach { bit ->
+                        Row(Modifier.width(64.dp), horizontalArrangement = Arrangement.Center) {
+                            Checkbox(checked = mask and bit != 0, enabled = state.full, onCheckedChange = { on ->
+                                Hub.appModeBit(dev, p, bit, on)
+                                Undo.offer("${state.label(p)}: ${situationName(bit)} ${if (on) "allowed" else "not allowed"}") {
+                                    Hub.appModeBit(dev, p, bit, !on)
+                                }
+                            })
+                        }
                     }
                 }
             }
         }
-        OutlinedButton(onClick = { adding = !adding }, enabled = state.full) { Text(if (adding) "Done" else "Add an app…") }
-        if (adding) AppIconGrid(dev, state, state.others.sortedBy { state.label(it).lowercase() },
-            onTap = { Hub.appMode(dev, it, DEFAULT_MASK); adding = false }, badge = "+")
+        if (editing && state.notOffered.isNotEmpty()) {
+            Text("Hidden", style = MaterialTheme.typography.titleSmall)
+            state.notOffered.sortedBy { state.label(it).lowercase() }.forEach { p ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    AppName(dev, p, state.label(p), Modifier.weight(1f))
+                    TextButton(onClick = {
+                        Hub.offer(dev, p, true)
+                        Undo.offer("${state.label(p)} shown") { Hub.offer(dev, p, false) }
+                    }) { Text("Show") }
+                }
+            }
+        }
+        OutlinedButton(onClick = { editing = !editing }, enabled = state.full) {
+            Text(if (editing) "Done" else "Edit list")
+        }
     }
 }
 

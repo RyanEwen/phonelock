@@ -43,6 +43,8 @@ data class PhoneState(
     /** Situations each scheduled app is allowed in (bits: 1 normal, 2 limited hours, 4 bedtime). */
     val masks: Map<String, Int> = emptyMap(),
     val schedule: List<ScheduleRule> = emptyList(),
+    /** Normally allowed apps a parent blocked for a while: package -> end time. */
+    val blocks: Map<String, Long> = emptyMap(),
     /** True once a full state (with app lists, table and schedule) has arrived; editing waits for it. */
     val full: Boolean = false,
 ) {
@@ -230,6 +232,12 @@ object Hub {
 
     fun revoke(dev: String, app: String) = send(dev, msg("revoke").put("app", app))
 
+    /** Takes a normally allowed [app] away for [minutes]; allowing it again ([grant] or [unblock]) ends that. */
+    fun block(dev: String, app: String, minutes: Long) =
+        send(dev, msg("block").put("app", app).put("minutes", minutes))
+
+    fun unblock(dev: String, app: String) = send(dev, msg("unblock").put("app", app))
+
     fun deny(r: Request) {
         send(r.device, msg("deny").put("req", r.req).put("label", r.label))
         resolve(r.req)
@@ -237,15 +245,45 @@ object Hub {
 
     fun home(dev: String, op: String, app: String) = send(dev, msg("home").put("op", op).put("app", app))
 
-    /** Sets the situations [app] is allowed in ([ScheduleRule] bits); 0 leaves it to temporary grants. */
-    fun appMode(dev: String, app: String, mask: Int) = send(dev, msg("appmode").put("app", app).put("mask", mask))
+    /**
+     * Allows ([on]) or disallows [app] in one situation ([bit]: MODE_NORMAL / MODE_LIMITED / MODE_BEDTIME).
+     * Sent as a single change so quick taps from slightly old state don't undo each other.
+     */
+    fun appModeBit(dev: String, app: String, bit: Int, on: Boolean) {
+        // Show the change at once; the device's next state confirms or corrects it.
+        editState(dev) { st ->
+            val cur = if (app in st.home) st.masks[app] ?: (MODE_NORMAL or MODE_LIMITED) else 0
+            val mask = if (on) cur or bit else cur and bit.inv()
+            when {
+                mask == 0 -> st.copy(home = st.home - app, others = (st.others + app).distinct(), masks = st.masks - app)
+                app !in st.home -> st.copy(home = st.home + app, others = st.others - app, masks = st.masks + (app to mask))
+                else -> st.copy(masks = st.masks + (app to mask))
+            }
+        }
+        send(dev, msg("appmode").put("app", app).put(if (on) "set" else "clear", bit))
+    }
+
+    /**
+     * Applies [change] to the cached state of [dev] right away, for instant feedback. Its timestamp is
+     * kept, so the device's next state (always newer) replaces it.
+     */
+    private fun editState(dev: String, change: (PhoneState) -> PhoneState) {
+        _states.update { m -> m[dev]?.let { m + (dev to change(it)) } ?: m }
+        saveStates()
+    }
 
     /** Replaces the phone's weekly schedule. */
     fun setSchedule(dev: String, rules: List<ScheduleRule>) =
         send(dev, msg("schedule").put("rules", ScheduleRule.toJson(rules)))
 
     /** Puts [app] on ([on]) or takes it off the phone's "Give access" list and the child's Ask picker. */
-    fun offer(dev: String, app: String, on: Boolean) = send(dev, msg("offer").put("app", app).put("on", on))
+    fun offer(dev: String, app: String, on: Boolean) {
+        editState(dev) { st ->
+            if (on) st.copy(notOffered = st.notOffered - app, others = (st.others + app).distinct())
+            else st.copy(others = st.others - app, notOffered = (st.notOffered + app).distinct())
+        }
+        send(dev, msg("offer").put("app", app).put("on", on))
+    }
 
     /** Seals [o] with [dev]'s key and posts it to the phone's topic, logging failures to its activity. */
     internal fun send(dev: String, o: JSONObject) {
@@ -349,7 +387,9 @@ object Hub {
             m.optBoolean("parent"), m.optBoolean("ringing"), arr("notOffered"),
             m.optString("mode", "normal"), m.optLong("modeUntil"),
             m.optJSONObject("masks")?.let { o -> o.keys().asSequence().associateWith { o.getInt(it) } } ?: emptyMap(),
-            ScheduleRule.listFrom(m.optJSONArray("schedule")), m.has("others") || m.optBoolean("full"))
+            ScheduleRule.listFrom(m.optJSONArray("schedule")),
+            m.optJSONObject("blocks")?.let { o -> o.keys().asSequence().associateWith { o.getLong(it) } } ?: emptyMap(),
+            m.has("others") || m.optBoolean("full"))
     }
 
     private fun stateJson(s: PhoneState) = JSONObject().put("ts", s.updated).put("name", s.name)
@@ -359,7 +399,7 @@ object Hub {
         .put("notOffered", JSONArray(s.notOffered))
         .put("mode", s.mode).put("modeUntil", s.modeUntil)
         .put("masks", JSONObject(s.masks as Map<*, *>)).put("schedule", ScheduleRule.toJson(s.schedule))
-        .put("full", s.full)
+        .put("blocks", JSONObject(s.blocks as Map<*, *>)).put("full", s.full)
 
     private fun saveStates() {
         val o = JSONObject()

@@ -36,6 +36,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -70,12 +74,13 @@ internal fun AppName(dev: String, pkg: String, label: String, modifier: Modifier
 
 /**
  * A launcher-style grid of the child phone's apps: icon with the name underneath, [columns] across.
- * [badge], if given, is drawn on each icon's corner (e.g. "✕" while editing). Built from rows rather than a
+ * [badge], if given, is drawn on each icon's corner (e.g. "✕" while editing); [notes] adds a small second
+ * line under chosen apps (e.g. "until 7:00 PM"). Built from rows rather than a
  * lazy grid because it sits inside the main screen's scrolling column.
  */
 @Composable
 internal fun AppIconGrid(dev: String, state: PhoneState, pkgs: List<String>, onTap: (String) -> Unit,
-                         badge: String? = null, columns: Int = 4) {
+                         badge: String? = null, columns: Int = 4, notes: Map<String, String> = emptyMap()) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         pkgs.chunked(columns).forEach { row ->
             Row(Modifier.fillMaxWidth()) {
@@ -91,6 +96,10 @@ internal fun AppIconGrid(dev: String, state: PhoneState, pkgs: List<String>, onT
                         Spacer(Modifier.height(4.dp))
                         Text(state.label(p), style = MaterialTheme.typography.labelMedium, maxLines = 1,
                             overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+                        notes[p]?.let {
+                            Text(it, style = MaterialTheme.typography.labelSmall, maxLines = 1,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+                        }
                     }
                 }
                 repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
@@ -102,9 +111,20 @@ internal fun AppIconGrid(dev: String, state: PhoneState, pkgs: List<String>, onT
 /** "Allowed right now": temporary grants with time left, extend and stop. */
 @Composable
 internal fun AllowedNowSection(dev: String, state: PhoneState, now: Long) {
+    var blocking by remember(dev) { mutableStateOf<String?>(null) }
+    val bit = modeBit(state.mode)
+    // Scheduled apps usable now: allowed in this situation and not blocked for a while.
+    val scheduled = state.home.filter {
+        (state.masks[it] ?: (MODE_NORMAL or MODE_LIMITED)) and bit != 0 && (state.blocks[it] ?: 0) <= now
+    }
+    val live = state.grants.filterValues { it > now }
+
     Section("Allowed right now") {
-        val live = state.grants.filterValues { it > now }
-        if (live.isEmpty()) Text("Only the apps scheduled for now.", style = MaterialTheme.typography.bodyMedium)
+        if (scheduled.isNotEmpty()) {
+            Text("Tap an app to block it for a while.", style = MaterialTheme.typography.bodySmall)
+            AppIconGrid(dev, state, scheduled, onTap = { blocking = it })
+        }
+        if (live.isNotEmpty()) Text("Allowed for a while", style = MaterialTheme.typography.titleSmall)
         live.forEach { (pkg, until) ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -120,62 +140,127 @@ internal fun AllowedNowSection(dev: String, state: PhoneState, now: Long) {
         }
         if (live.size > 1) OutlinedButton(onClick = { Hub.revoke(dev, "all") }) { Text("Stop all") }
     }
+
+    blocking?.let { p ->
+        LengthDialog("Block ${state.label(p)} for how long?", onPick = { m -> Hub.block(dev, p, m); blocking = null },
+            onDismiss = { blocking = null })
+    }
+}
+
+/** The schedule bit for a situation name from the device. */
+internal fun modeBit(mode: String) = when (mode) {
+    "bedtime" -> MODE_BEDTIME
+    "limited" -> MODE_LIMITED
+    else -> MODE_NORMAL
 }
 
 /**
- * "Allow for a while": tap an app, then pick a length. "Edit list" takes apps off the list (they also leave the
- * child's Ask picker) and shows the removed ones so they can be put back.
+ * "Not allowed right now": apps blocked at the moment (unscheduled, outside their hours, or paused); tap
+ * one, then pick a length to allow it for a while. Hiding apps lives in the full app list.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-internal fun AllowForAWhileSection(dev: String, state: PhoneState) {
+internal fun NotAllowedNowSection(dev: String, state: PhoneState) {
     var pick by remember(dev) { mutableStateOf<String?>(null) }
-    var editing by remember(dev) { mutableStateOf(false) }
-    // Unscheduled apps, plus scheduled ones that the current situation blocks (e.g. at bedtime).
-    val bit = when (state.mode) { "bedtime" -> MODE_BEDTIME; "limited" -> MODE_LIMITED; else -> MODE_NORMAL }
-    val blockedNow = state.home.filter { (state.masks[it] ?: (MODE_NORMAL or MODE_LIMITED)) and bit == 0 }
-    val others = state.others.sortedBy { state.label(it).lowercase() }
+    // Unscheduled apps, scheduled ones the current situation excludes (e.g. at bedtime), and paused ones.
+    val bit = modeBit(state.mode)
+    val nowMs = System.currentTimeMillis()
+    val paused = state.blocks.filterValues { it > nowMs }
+    val blockedNow = state.home.filter { (state.masks[it] ?: (MODE_NORMAL or MODE_LIMITED)) and bit == 0 } + paused.keys
     val grantable = (blockedNow + state.others).distinct().sortedBy { state.label(it).lowercase() }
 
-    Section("Allow for a while") {
-        if (state.others.isEmpty() && state.notOffered.isEmpty()) {
-            Text("Tap Refresh to load the device's apps.", style = MaterialTheme.typography.bodySmall)
-        }
-        if (editing) {
-            Text("Tap an app to take it off this list. They won't be able to ask for it either.",
-                style = MaterialTheme.typography.bodySmall)
-            AppIconGrid(dev, state, others, onTap = { Hub.offer(dev, it, false) }, badge = "✕")
-            if (state.notOffered.isNotEmpty()) {
-                Text("Taken off the list", style = MaterialTheme.typography.titleSmall)
-                AppIconGrid(dev, state, state.notOffered.sortedBy { state.label(it).lowercase() },
-                    onTap = { Hub.offer(dev, it, true) }, badge = "+")
-            }
-            Button(onClick = { editing = false }) { Text("Done") }
-            return@Section
-        }
-
-        // Tapping an app asks how long; nothing is sent until a length is chosen.
-        AppIconGrid(dev, state, grantable, onTap = { pick = it })
-        TextButton(onClick = { editing = true; pick = null }) { Text("Edit list") }
+    Section("Not allowed right now") {
+        Text(if (state.others.isEmpty() && state.notOffered.isEmpty()) "Tap Refresh to load the device's apps."
+            else "Tap an app to allow it for a while.", style = MaterialTheme.typography.bodySmall)
+        AppIconGrid(dev, state, grantable, onTap = { pick = it },
+            notes = paused.mapValues { "paused until ${time(it.value)}" })
     }
 
-    pick?.let { p -> GrantLengthDialog(state.label(p), onPick = { m -> Hub.grant(dev, p, m); pick = null },
-        onDismiss = { pick = null }) }
+    pick?.let { p ->
+        // A paused app can simply be given back; any app can be allowed for a set time.
+        val unpause = if (p in paused) ("Allow again now" to { Hub.unblock(dev, p); pick = null }) else null
+        LengthDialog("Allow ${state.label(p)} for how long?", onPick = { m -> Hub.grant(dev, p, m); pick = null },
+            onDismiss = { pick = null }, extra = unpause)
+    }
 }
 
-/** Asks how long to allow [label] for; [onPick] gets the minutes. */
+/**
+ * Asks "[title]" with the standard lengths, plus "Until a time…" and "Custom length…" (up to 24 hours, the
+ * protocol's limit); [onPick] gets the minutes. [extra], if given, is one more choice shown first (label and
+ * action), e.g. "Allow again now".
+ */
 @Composable
-internal fun GrantLengthDialog(label: String, onPick: (Long) -> Unit, onDismiss: () -> Unit) {
+internal fun LengthDialog(title: String, onPick: (Long) -> Unit, onDismiss: () -> Unit,
+                          extra: Pair<String, () -> Unit>? = null) {
+    val ctx = LocalContext.current
+    var custom by remember { mutableStateOf(false) }
+    if (custom) {
+        CustomLengthDialog(title, onPick = onPick, onDismiss = onDismiss)
+        return
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Allow $label for how long?") },
+        title = { Text(title) },
         text = {
             Column {
+                extra?.let { (label, action) -> TextButton(onClick = action) { Text(label) } }
                 GRANT_DURATIONS.forEach { m ->
                     TextButton(onClick = { onPick(m) }) { Text(fmtMinutes(m)) }
                 }
+                TextButton(onClick = {
+                    val now = java.util.Calendar.getInstance()
+                    android.app.TimePickerDialog(ctx, { _, h, min -> onPick(minutesUntil(h, min)) },
+                        now.get(java.util.Calendar.HOUR_OF_DAY), now.get(java.util.Calendar.MINUTE),
+                        android.text.format.DateFormat.is24HourFormat(ctx)).show()
+                }) { Text("Until a time…") }
+                TextButton(onClick = { custom = true }) { Text("Custom length…") }
             }
         },
         confirmButton = {},
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+}
+
+/** Hours and minutes fields for a length that isn't in the list. */
+@Composable
+private fun CustomLengthDialog(title: String, onPick: (Long) -> Unit, onDismiss: () -> Unit) {
+    var hours by remember { mutableStateOf("") }
+    var mins by remember { mutableStateOf("") }
+    val total = (hours.toLongOrNull() ?: 0) * 60 + (mins.toLongOrNull() ?: 0)
+    val ok = total in 1..MAX_GRANT_MINUTES
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(hours, { hours = it.filter(Char::isDigit).take(2) }, Modifier.weight(1f),
+                        label = { Text("Hours") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                    OutlinedTextField(mins, { mins = it.filter(Char::isDigit).take(4) }, Modifier.weight(1f),
+                        label = { Text("Minutes") }, singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                }
+                if (total > MAX_GRANT_MINUTES) Text("At most 24 hours.", color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = { TextButton(onClick = { onPick(total) }, enabled = ok) {
+            Text(if (ok) fmtMinutes(total) else "OK") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+}
+
+/** Longest grant or block the device accepts (24 hours). */
+private const val MAX_GRANT_MINUTES = 24 * 60L
+
+/** Minutes from now until the next [hour]:[minute] (tomorrow if that time has passed today); at least 1. */
+private fun minutesUntil(hour: Int, minute: Int): Long {
+    val now = java.util.Calendar.getInstance()
+    val target = (now.clone() as java.util.Calendar).apply {
+        set(java.util.Calendar.HOUR_OF_DAY, hour)
+        set(java.util.Calendar.MINUTE, minute)
+        set(java.util.Calendar.SECOND, 0)
+        set(java.util.Calendar.MILLISECOND, 0)
+        if (!after(now)) add(java.util.Calendar.DAY_OF_MONTH, 1)
+    }
+    return ((target.timeInMillis - now.timeInMillis + 59_999) / 60_000).coerceIn(1, MAX_GRANT_MINUTES)
 }

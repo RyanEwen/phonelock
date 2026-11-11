@@ -94,7 +94,8 @@ public class RemoteService extends Service {
      * changes (e.g. bedtime starts), and tell the child and the parents.
      */
     private void expiryLoop() {
-        Set<String> last = new TreeSet<>(Grants.load(this).keySet());
+        java.util.Map<String, Long> lastGrants = Grants.load(this);
+        java.util.Map<String, Long> lastBlocks = Grants.loadBlocks(this);
         int lastMode = Schedule.currentMode(this);
         while (running) {
             try { Thread.sleep(20_000); } catch (InterruptedException e) { if (!running) return; }
@@ -103,25 +104,59 @@ public class RemoteService extends Service {
                 lastMode = mode;
                 onModeChanged(mode);
             }
-            Set<String> now = new TreeSet<>(Grants.load(this).keySet());
-            if (!now.equals(last)) {
-                Set<String> gone = new TreeSet<>(last);
-                gone.removeAll(now);
-                Policy.apply(this);
-                if (!gone.isEmpty()) {
-                    List<String> names = new ArrayList<>();
-                    for (String p : gone) names.add(Remote.label(this, p));
-                    String txt = "Time's up: " + String.join(", ", names);
-                    if (Remote.paired(this)) {
-                        Remote.notifyKid(this, txt);
-                        Remote.event(this, txt);
-                        Remote.sendState(this, false);
-                    } else {
-                        replyPlain(this, txt + ". " + Grants.describe(this, Grants.load(this)));
-                    }
+
+            java.util.Map<String, Long> blocks = Grants.loadBlocks(this);
+            Set<String> blocksEnded = expired(lastBlocks, blocks);
+            boolean blocksChanged = !blocks.keySet().equals(lastBlocks.keySet());
+            lastBlocks = blocks;
+            if (!blocksEnded.isEmpty()) onBlocksEnded(blocksEnded);
+            else if (blocksChanged) Policy.apply(this);
+
+            java.util.Map<String, Long> grants = Grants.load(this);
+            Set<String> grantsEnded = expired(lastGrants, grants);
+            boolean grantsChanged = !grants.keySet().equals(lastGrants.keySet());
+            lastGrants = grants;
+            if (grantsChanged) Policy.apply(this);
+            if (!grantsEnded.isEmpty()) {
+                List<String> names = new ArrayList<>();
+                for (String p : grantsEnded) names.add(Remote.label(this, p));
+                String txt = "Time's up: " + String.join(", ", names);
+                if (Remote.paired(this)) {
+                    Remote.notifyKid(this, txt);
+                    Remote.event(this, txt);
+                    Remote.sendState(this, false);
+                } else {
+                    replyPlain(this, txt + ". " + Grants.describe(this, grants));
                 }
-                last = now;
             }
+        }
+    }
+
+    /**
+     * Entries of {@code before} that are gone from {@code after} because their time ran out. Ones a parent
+     * removed early (revoke, unblock, or a grant replacing a block) still had time left and are not
+     * reported, so nobody gets a false "Time's up" or a second "is back".
+     */
+    private static Set<String> expired(java.util.Map<String, Long> before, java.util.Map<String, Long> after) {
+        long now = System.currentTimeMillis();
+        Set<String> out = new TreeSet<>();
+        for (java.util.Map.Entry<String, Long> e : before.entrySet()) {
+            boolean gone = !after.containsKey(e.getKey());
+            if (gone && e.getValue() <= now) out.add(e.getKey());
+        }
+        return out;
+    }
+
+    /** Temporary blocks ran out: put the apps back and tell the child; parents just get a list entry. */
+    private void onBlocksEnded(Set<String> ended) {
+        Policy.apply(this);
+        List<String> names = new ArrayList<>();
+        for (String p : ended) names.add(Remote.label(this, p));
+        String txt = String.join(", ", names) + (ended.size() == 1 ? " is" : " are") + " back";
+        Remote.notifyKid(this, txt);
+        if (Remote.paired(this)) {
+            Remote.event(this, txt, null, true);
+            Remote.sendState(this, false);
         }
     }
 
@@ -154,6 +189,8 @@ public class RemoteService extends Service {
                 conn = c;
                 c.setConnectTimeout(20_000);
                 c.setReadTimeout(120_000); // ntfy sends keepalives every ~45 s
+                // Ask for an uncompressed stream so proxies (Cloudflare) pass each line on immediately.
+                c.setRequestProperty("Accept-Encoding", "identity");
                 try (BufferedReader r = new BufferedReader(
                         new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8))) {
                     backoff = 2_000;

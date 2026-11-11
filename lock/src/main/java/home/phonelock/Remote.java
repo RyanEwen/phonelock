@@ -31,6 +31,8 @@ public final class Remote {
     /** Longest sealed body sent inline; ntfy's message limit is 4096 bytes. */
     private static final int MAX_INLINE = 3800;
     private static final long MAX_AGE_MS = 6 * 3600_000L;
+    /** Longest a grant or block can last, and so the longest it can be worth applying late. */
+    private static final long LONG_MAX_AGE_MS = 24 * 3600_000L;
     private static final long MAX_FUTURE_MS = 5 * 60_000L;
     private Remote() {}
 
@@ -72,7 +74,13 @@ public final class Remote {
      */
     private static synchronized boolean fresh(Context c, JSONObject m) {
         long ts = m.optLong("ts"), now = System.currentTimeMillis();
-        if (ts <= 0 || now - ts > MAX_AGE_MS || ts - now > MAX_FUTURE_MS) return false;
+        // Grants and blocks stay meaningful while their time lasts (up to 24 h), so a device that was off
+        // overnight still applies the rest of a long one; everything else expires after 6 h.
+        String t = m.optString("t");
+        long maxAge = ("grant".equals(t) || "block".equals(t))
+                ? Math.min(LONG_MAX_AGE_MS, m.optLong("minutes", 0) * 60_000L) : MAX_AGE_MS;
+        maxAge = Math.max(maxAge, MAX_AGE_MS);
+        if (ts <= 0 || now - ts > maxAge || ts - now > MAX_FUTURE_MS) return false;
         String id = m.optString("id");
         if (id.isEmpty() || id.contains(",") || id.contains(":")) return false;
         SharedPreferences p = Policy.prefs(c);
@@ -82,7 +90,7 @@ public final class Remote {
             if (colon <= 0) continue; // old format without a timestamp: drop
             long seenTs;
             try { seenTs = Long.parseLong(e.substring(colon + 1)); } catch (NumberFormatException x) { continue; }
-            if (now - seenTs > MAX_AGE_MS + MAX_FUTURE_MS) continue;
+            if (now - seenTs > LONG_MAX_AGE_MS + MAX_FUTURE_MS) continue;
             if (e.substring(0, colon).equals(id)) return false;
             kept.add(e);
         }
@@ -123,6 +131,9 @@ public final class Remote {
                 Map<String, Long> g = Grants.load(c);
                 g.put(pkg, until);
                 Grants.save(c, g);
+                // The latest decision wins: allowing an app ends any block on it.
+                Map<String, Long> b = Grants.loadBlocks(c);
+                if (b.remove(pkg) != null) Grants.saveBlocks(c, b);
                 Policy.apply(c);
                 String txt = label(c, pkg) + " allowed until " + time(c, until);
                 notifyKid(c, txt + " (" + who + ")");
@@ -138,6 +149,37 @@ public final class Remote {
                 Policy.apply(c);
                 String txt = ("all".equals(pkg) ? "All extra apps" : label(c, pkg)) + " turned off";
                 notifyKid(c, txt);
+                event(c, who + ": " + txt, who, false);
+                sendState(c, false);
+                break;
+            }
+            case "block": {
+                // Take a normally allowed app away for a while; it closes and leaves the home screen.
+                String pkg = m.optString("app");
+                long mins = Math.max(1, Math.min(24 * 60, m.optLong("minutes", 60)));
+                long now = System.currentTimeMillis();
+                long until = Math.min(now, m.optLong("ts", now)) + mins * 60_000L;
+                if (until <= now) break;
+                Map<String, Long> b = Grants.loadBlocks(c);
+                b.put(pkg, until);
+                Grants.saveBlocks(c, b);
+                Map<String, Long> g = Grants.load(c);
+                if (g.remove(pkg) != null) Grants.save(c, g);
+                Policy.apply(c);
+                String txt = label(c, pkg) + " paused until " + time(c, until);
+                notifyKid(c, txt + " (" + who + ")");
+                event(c, who + ": " + txt, who, false);
+                sendState(c, false);
+                break;
+            }
+            case "unblock": {
+                String pkg = m.optString("app");
+                Map<String, Long> b = Grants.loadBlocks(c);
+                if (b.remove(pkg) == null) break;
+                Grants.saveBlocks(c, b);
+                Policy.apply(c);
+                String txt = label(c, pkg) + " is back";
+                notifyKid(c, txt + " (" + who + ")");
                 event(c, who + ": " + txt, who, false);
                 sendState(c, false);
                 break;
@@ -161,8 +203,16 @@ public final class Remote {
             }
             case "appmode": {
                 // Which situations (normal / limited hours / bedtime) an app is allowed in; 0 = only by grant.
+                // "set"/"clear" change single situations against the device's current mask, so quick taps
+                // from a parent app with slightly old state don't undo each other; "mask" replaces it.
                 String pkg = m.optString("app");
-                int mask = m.optInt("mask") & Schedule.ALL;
+                int mask;
+                if (m.has("mask")) {
+                    mask = m.optInt("mask") & Schedule.ALL;
+                } else {
+                    Integer cur = Schedule.masks(c).get(pkg);
+                    mask = ((cur == null ? 0 : cur) | m.optInt("set")) & ~m.optInt("clear") & Schedule.ALL;
+                }
                 if (mask != 0 && !Policy.isPresent(c, pkg)) break;
                 Schedule.setMask(c, pkg, mask);
                 Policy.apply(c);
@@ -301,6 +351,12 @@ public final class Remote {
             }
             o.put("name", Policy.prefs(c).getString("device_name", "Device"));
             o.put("grants", grants);
+            JSONObject blocks = new JSONObject();
+            for (Map.Entry<String, Long> e : Grants.loadBlocks(c).entrySet()) {
+                blocks.put(e.getKey(), e.getValue());
+                labels.put(e.getKey(), label(c, e.getKey()));
+            }
+            o.put("blocks", blocks);
             o.put("home", home);
             o.put("parent", Policy.inParentMode(c));
             o.put("ringing", Ringer.isRinging());

@@ -78,6 +78,8 @@ class ParentService : Service() {
                 synchronized(conns) { conns.add(h) }
                 h.connectTimeout = 20_000
                 h.readTimeout = 120_000
+                // Uncompressed, so proxies (Cloudflare) pass each message on immediately.
+                h.setRequestProperty("Accept-Encoding", "identity")
                 h.inputStream.bufferedReader().use { r ->
                     Hub.connected.value = true
                     backoff = 2_000

@@ -10,7 +10,7 @@ Two Android apps for locking down a child's phone:
 
 ## Hub (server)
 
-Both apps talk through an [ntfy](https://ntfy.sh) server. `server/` runs our own (ntfy + Caddy in Docker) with Firebase Cloud Messaging, so parent phones get messages by push instead of a permanent background connection; see `server/README.md`. The parent app reads the hub address and Firebase settings from `secrets/firebase.properties` (`hubUrl`, `appId`, `apiKey`, `projectId`, `senderId`); without it, it uses ntfy.sh and its own connection. Only the parent app is meant for Google Play; the lock app installs through the setup QR code.
+Both apps talk through an [ntfy](https://ntfy.sh) server. `server/` runs our own (ntfy in Docker behind the apps host's shared nginx, Cloudflare-proxied) with Firebase Cloud Messaging, so parent phones get messages by push instead of a permanent background connection; see `server/README.md`. The parent app reads the hub address and Firebase settings from `secrets/firebase.properties` (`hubUrl`, `appId`, `apiKey`, `projectId`, `senderId`); without it, it uses ntfy.sh and its own connection. Only the parent app is meant for Google Play; the lock app installs through the setup QR code.
 
 ## Build (WSL)
 

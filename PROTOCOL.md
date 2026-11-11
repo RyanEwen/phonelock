@@ -20,11 +20,13 @@ Plaintext is JSON with common fields:
 | `t` | fields | effect |
 |---|---|---|
 | `status` | `full` | phone replies with `state` (`full` adds `others`) |
-| `grant` | `app` (package), `minutes` (1–1440), `req`? | allow app until now+minutes |
+| `grant` | `app` (package), `minutes` (1–1440), `req`? | allow app until min(now, ts)+minutes; accepted late (up to 24 h) while time remains; ends any block on it |
 | `revoke` | `app` or `"all"` | end grant(s) |
+| `block` | `app`, `minutes` (1–1440) | take a normally allowed app away until min(now, ts)+minutes; accepted late (up to 24 h) while time remains; ends any grant on it |
+| `unblock` | `app` | end a block early |
 | `deny` | `req`, `label` | tell the kid a request was declined |
 | `home` | `op` (`add`/`remove`), `app` | older form of `appmode`: add = normal + limited hours, remove = 0 |
-| `appmode` | `app`, `mask` (bits: 1 normal, 2 limited hours, 4 bedtime; 0 = only by grant) | which situations an app is on the home screen in; non-zero adds it to the home list |
+| `appmode` | `app`, and either `mask` (bits: 1 normal, 2 limited hours, 4 bedtime; 0 = only by grant) or `set`/`clear` (bits changed against the device's current mask) | which situations an app is on the home screen in; non-zero adds it to the home list |
 | `schedule` | `rules` [{`mode` (`limited`/`bedtime`), `days` (bit 0 = Monday … bit 6 = Sunday), `start`, `end` (minutes after midnight; `end < start` runs past midnight, `end == start` is all day)}] | replaces the weekly schedule; bedtime wins over limited hours |
 | `offer` | `app`, `on` | put an app on (`true`) or take it off the grantable list; apps taken off also leave the kid's Ask picker; phone replies with `state` (`full`) |
 | `icons` | `apps` [pkg] | phone replies with `icons` (`req` = this message's `id`); parents ask only for icons they haven't cached |
@@ -38,7 +40,7 @@ Plaintext is JSON with common fields:
 
 | `t` | fields |
 |---|---|
-| `state` | `grants` {pkg: untilMs}, `home` [pkg], `others` [pkg]?, `labels` {pkg: label}, `parent`, `ringing`, `notOffered` [pkg]? (with `full`: apps taken off the grantable list), `mode` (`normal`/`limited`/`bedtime`), `modeUntil` (ms, 0 = no schedule), with `full`: `masks` {pkg: mask}, `schedule` [rule] |
+| `state` | `name`, `grants` {pkg: untilMs}, `blocks` {pkg: untilMs}, `home` [pkg], `others` [pkg]?, `labels` {pkg: label}, `parent`, `ringing`, `notOffered` [pkg]? (with `full`: apps taken off the grantable list), `mode` (`normal`/`limited`/`bedtime`), `modeUntil` (ms, 0 = no schedule), with `full`: `masks` {pkg: mask}, `schedule` [rule] |
 | `event` | `text` (human readable; e.g. "Dad: WhatsApp allowed until 6:00 PM", "Time's up: WhatsApp"), `by`? (the parent whose action it was), `quiet`? (routine; list only, no notification) |
 | `req` | `req` (id), `app`, `label`, `minutes` — kid tapped "Ask for an app" (rate-limited to 1/min) |
 | `loc` | `req`, `lat`, `lng`, `acc` (m), `fix` (ms), `prov`, `batt` (%), `chg`, `error`?; position fields are absent when no fix was available |
@@ -46,7 +48,7 @@ Plaintext is JSON with common fields:
 | `icons` | `req`; with an attachment holding JSON {pkg: base64 WebP, 96 px} |
 | `shot` | `req`, `app`?, `label`?, `error`?; with an attachment holding the screenshot unless `error` is set |
 
-Temporary grants override the schedule. When the situation changes the phone re-locks and sends an `event` ("Bedtime until 7:00 AM") and a fresh `state`. Ringing changes are announced with `event` and a fresh `state`. Screenshot views are logged as an `event`, at most once per parent every 5 minutes.
+Temporary grants override the schedule, and temporary blocks remove scheduled apps; the latest grant or block on an app replaces the other. When the situation changes the phone re-locks and sends an `event` ("Bedtime until 7:00 AM") and a fresh `state`. Ringing changes are announced with `event` and a fresh `state`. Screenshot views are logged as an `event`, at most once per parent every 5 minutes.
 
 ## Attachments (screenshots, icons)
 

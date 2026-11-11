@@ -211,11 +211,17 @@ final class Schedule {
         return 0;
     }
 
-    /** Scheduled apps allowed in the current situation, in home-screen order. */
+    /**
+     * Scheduled apps allowed in the current situation, in home-screen order, minus any a parent has blocked
+     * for a while ({@link Grants#loadBlocks}).
+     */
     static List<String> allowedNow(Context c) {
         int mode = currentMode(c);
+        java.util.Set<String> blocked = Grants.loadBlocks(c).keySet();
         List<String> out = new ArrayList<>();
-        for (Map.Entry<String, Integer> e : masks(c).entrySet()) if ((e.getValue() & mode) != 0) out.add(e.getKey());
+        for (Map.Entry<String, Integer> e : masks(c).entrySet()) {
+            if ((e.getValue() & mode) != 0 && !blocked.contains(e.getKey())) out.add(e.getKey());
+        }
         return out;
     }
 }

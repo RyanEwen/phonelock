@@ -1,11 +1,12 @@
 # ntfy settings for the PhoneLock hub. Docs: https://docs.ntfy.sh/config/
-# nginx passes the visitor's real address (Cloudflare's CF-Connecting-IP) as X-Forwarded-For, so rate
-# limits apply per household rather than per Cloudflare edge.
+# nginx passes the visitor's real address (from Cloudflare's CF-Connecting-IP, trusted only from
+# Cloudflare's ranges) as X-Forwarded-For, so rate limits apply per household, not per Cloudflare edge.
 behind-proxy: true
 
-# Messages kept 12 h so a phone that was offline catches up; attachments (screenshots, icons) 3 h.
+# Messages kept 24 h so a device that was off overnight still gets a long grant or block (up to 24 h);
+# attachments (screenshots, icons) 3 h.
 cache-file: /var/cache/ntfy/cache.db
-cache-duration: 12h
+cache-duration: 24h
 attachment-cache-dir: /var/cache/ntfy/attachments
 attachment-file-size-limit: 2M
 attachment-total-size-limit: 2G
