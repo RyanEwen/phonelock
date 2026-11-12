@@ -40,7 +40,7 @@ internal fun DiagnosticsScreen(dev: String, name: String, onBack: () -> Unit) {
     LaunchedEffect(dev) { Diagnostics.request(dev) }
     val ctx = LocalContext.current
 
-    Page("Diagnostics", onBack) {
+    Page("Diagnostics", onBack, busy = asking) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { Diagnostics.request(dev) }, enabled = !asking) {
                 Text(if (asking) "Asking $name…" else "Ask again")

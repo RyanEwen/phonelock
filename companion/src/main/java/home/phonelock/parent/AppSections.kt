@@ -13,24 +13,17 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.InputChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -63,13 +56,21 @@ internal fun AppIcon(dev: String, pkg: String, label: String, size: Dp = 24.dp) 
     }
 }
 
-/** An app's icon and name on one line, for the lists below. */
+/**
+ * An app's icon and name on one line, for the lists below. [note], if given, is a small second line under
+ * the name (for example its daily limit), in the error colour when [noteAlert].
+ */
 @Composable
-internal fun AppName(dev: String, pkg: String, label: String, modifier: Modifier = Modifier) {
+internal fun AppName(dev: String, pkg: String, label: String, modifier: Modifier = Modifier,
+                     note: String? = null, noteAlert: Boolean = false) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         AppIcon(dev, pkg, label, 32.dp)
         Spacer(Modifier.width(12.dp))
-        Text(label, fontWeight = FontWeight.Medium)
+        Column {
+            Text(label, fontWeight = FontWeight.Medium)
+            if (note != null) Text(note, style = MaterialTheme.typography.bodySmall,
+                color = if (noteAlert) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -136,6 +137,9 @@ internal fun AllowedNowSection(dev: String, state: PhoneState, now: Long) {
     }
 
     Section("Allowed right now") {
+        if (scheduled.isEmpty() && live.isEmpty() && paused.isEmpty() && controlsNow.isEmpty()) {
+            EmptyNote("Nothing is allowed right now. Allow an app for a while from the list below.")
+        }
         if (scheduled.isNotEmpty()) {
             Text("Tap an app to pause it for a while.", style = MaterialTheme.typography.bodySmall)
             AppIconGrid(dev, state, scheduled, onTap = { blocking = it })
@@ -166,22 +170,26 @@ internal fun AllowedNowSection(dev: String, state: PhoneState, now: Long) {
     }
     granted?.let { p ->
         val until = state.grants[p] ?: 0
-        AlertDialog(
-            onDismissRequest = { granted = null },
-            title = { Text("${state.label(p)} until ${time(until)}") },
-            text = {
-                Column {
-                    TextButton(onClick = {
-                        Hub.grant(dev, p, (until - System.currentTimeMillis()) / 60_000 + 30); granted = null
-                    }) { Text("Add 30 minutes") }
-                    TextButton(onClick = { Hub.revoke(dev, p); granted = null }) { Text("Stop now") }
-                    if (live.size > 1) TextButton(onClick = { Hub.revoke(dev, "all"); granted = null }) {
-                        Text("Stop all allowed-for-a-while apps")
-                    }
-                }
+        /** Gives back what was running before a stop, as Undo for "Stop now" and "Stop all". */
+        fun regrant(grants: Map<String, Long>) {
+            val nowMs = System.currentTimeMillis()
+            grants.filterValues { it > nowMs }.forEach { (app, end) -> Hub.grant(dev, app, ((end - nowMs) / 60_000).coerceAtLeast(1)) }
+        }
+        OptionsDialog("${state.label(p)} until ${time(until)}", onDismiss = { granted = null }, options = listOfNotNull(
+            MenuEntry("Add 30 minutes") {
+                Hub.grant(dev, p, (until - System.currentTimeMillis()) / 60_000 + 30); granted = null
             },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { granted = null }) { Text("Close") } })
+            MenuEntry("Stop now") {
+                val before = mapOf(p to until)
+                Hub.revoke(dev, p); granted = null
+                Undo.offer("${state.label(p)} stopped") { regrant(before) }
+            },
+            if (live.size > 1) MenuEntry("Stop all allowed-for-a-while apps") {
+                val before = live
+                Hub.revoke(dev, "all"); granted = null
+                Undo.offer("All allowed-for-a-while apps stopped") { regrant(before) }
+            } else null,
+        ))
     }
 }
 
@@ -228,8 +236,7 @@ internal fun NotAllowedNowSection(dev: String, state: PhoneState) {
     }
 
     Section("Not allowed right now") {
-        Text(if (state.others.isEmpty() && state.notOffered.isEmpty()) "Tap Refresh to load the device's apps."
-            else "Tap an app to allow it for a while.", style = MaterialTheme.typography.bodySmall)
+        Text("Tap an app to allow it for a while.", style = MaterialTheme.typography.bodySmall)
         AppIconGrid(dev, state, grantable, onTap = { pick = it },
             notes = paused.mapValues { "Paused until\n${time(it.value)}" })
         ControlPills(dev, controlsOff, label = { id ->
@@ -259,26 +266,17 @@ internal fun LengthDialog(title: String, onPick: (Long) -> Unit, onDismiss: () -
         CustomLengthDialog(title, onPick = onPick, onDismiss = onDismiss)
         return
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            Column {
-                extra?.let { (label, action) -> TextButton(onClick = action) { Text(label) } }
-                GRANT_DURATIONS.forEach { m ->
-                    TextButton(onClick = { onPick(m) }) { Text(fmtMinutes(m)) }
-                }
-                TextButton(onClick = {
-                    val now = java.util.Calendar.getInstance()
-                    android.app.TimePickerDialog(ctx, { _, h, min -> onPick(minutesUntil(h, min)) },
-                        now.get(java.util.Calendar.HOUR_OF_DAY), now.get(java.util.Calendar.MINUTE),
-                        android.text.format.DateFormat.is24HourFormat(ctx)).show()
-                }) { Text("Until a time…") }
-                TextButton(onClick = { custom = true }) { Text("Custom length…") }
-            }
+    OptionsDialog(title, onDismiss, options = listOfNotNull(
+        extra?.let { (label, action) -> MenuEntry(label, onClick = action) },
+        *GRANT_DURATIONS.map { m -> MenuEntry(fmtMinutes(m)) { onPick(m) } }.toTypedArray(),
+        MenuEntry("Until a time…") {
+            val now = java.util.Calendar.getInstance()
+            android.app.TimePickerDialog(ctx, { _, h, min -> onPick(minutesUntil(h, min)) },
+                now.get(java.util.Calendar.HOUR_OF_DAY), now.get(java.util.Calendar.MINUTE),
+                android.text.format.DateFormat.is24HourFormat(ctx)).show()
         },
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+        MenuEntry("Custom length…") { custom = true },
+    ))
 }
 
 /** Hours and minutes fields for a length that isn't in the list. */
@@ -288,7 +286,7 @@ private fun CustomLengthDialog(title: String, onPick: (Long) -> Unit, onDismiss:
     var mins by remember { mutableStateOf("") }
     val total = (hours.toLongOrNull() ?: 0) * 60 + (mins.toLongOrNull() ?: 0)
     val ok = total in 1..MAX_GRANT_MINUTES
-    AlertDialog(
+    AppDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
@@ -305,8 +303,7 @@ private fun CustomLengthDialog(title: String, onPick: (Long) -> Unit, onDismiss:
                     style = MaterialTheme.typography.bodySmall)
             }
         },
-        confirmButton = { TextButton(onClick = { onPick(total) }, enabled = ok) {
-            Text(if (ok) fmtMinutes(total) else "OK") } },
+        confirmButton = { TextButton(onClick = { onPick(total) }, enabled = ok) { Text("Set") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }
 

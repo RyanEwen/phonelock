@@ -1,22 +1,16 @@
 package home.phonelock.parent
 
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
 /**
@@ -58,39 +52,23 @@ internal fun ControlPills(dev: String, ids: List<String>, label: @Composable (St
 /**
  * "Wi-Fi and Bluetooth": in which situations the child can manage each (the same Normal / Limited / Bedtime
  * ticks as apps), from the ⋮ button next to "Ask for an app". Allowing or pausing them for a while is done
- * from their pills under "Allowed right now" / "Not allowed right now". A tinted card with plain rows, so it
- * doesn't read as more apps.
+ * from their pills under "Allowed right now" / "Not allowed right now". Plain rows rather than app icons, so
+ * it doesn't read as more apps.
  */
 @Composable
 internal fun DeviceControlsSection(dev: String, state: PhoneState) {
-    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
-        Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Wi-Fi and Bluetooth", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Text("When they can join networks and pair devices themselves, from the ⋮ button next to " +
-                "\"Ask for an app\". Settings stays locked either way.", style = MaterialTheme.typography.bodySmall)
+    Section("Wi-Fi and Bluetooth") {
+        Text("When they can join networks and pair devices themselves, from the ⋮ button next to " +
+            "\"Ask for an app\". Settings stays locked either way.", style = MaterialTheme.typography.bodySmall)
+        SituationHeader()
+        DeviceControls.ALL.forEach { id ->
+            val mask = if (id in state.home) state.masks[id] ?: (MODE_NORMAL or MODE_LIMITED) else 0
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("", Modifier.weight(1f))
-                listOf("Normal", "Limited", "Bedtime").forEach {
-                    Text(it, Modifier.width(56.dp), style = MaterialTheme.typography.labelSmall, textAlign = TextAlign.Center)
-                }
-            }
-            DeviceControls.ALL.forEach { id ->
-                val mask = if (id in state.home) state.masks[id] ?: (MODE_NORMAL or MODE_LIMITED) else 0
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(DeviceControls.label(id), Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.Medium)
-                    listOf(MODE_NORMAL, MODE_LIMITED, MODE_BEDTIME).forEach { b ->
-                        Row(Modifier.width(56.dp), horizontalArrangement = Arrangement.Center) {
-                            Checkbox(checked = mask and b != 0, enabled = state.full, onCheckedChange = { on ->
-                                Hub.appModeBit(dev, id, b, on)
-                                Undo.offer("${DeviceControls.label(id)}: ${situationName(b)} ${if (on) "allowed" else "not allowed"}") {
-                                    Hub.appModeBit(dev, id, b, !on)
-                                }
-                            })
-                        }
-                    }
-                }
+                Text(DeviceControls.label(id), Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium)
+                SituationChecks(dev, id, DeviceControls.label(id), mask, enabled = state.full)
+                // No menu on these rows; keep the checkboxes under the app table's columns.
+                Spacer(Modifier.width(MENU))
             }
         }
     }

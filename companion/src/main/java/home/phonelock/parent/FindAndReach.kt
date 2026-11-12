@@ -20,11 +20,8 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -36,11 +33,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 
-/** A tonal button with an icon over its label, for the Location / Ring / View screen row. */
+/** A tonal button with an icon over its label, for the Activity / Ring / View screen row. */
 @Composable
 internal fun ActionTile(icon: ImageVector, label: String, modifier: Modifier = Modifier, enabled: Boolean = true,
                        highlighted: Boolean = false, onClick: () -> Unit) {
@@ -75,24 +71,29 @@ internal fun FindAndReach(dev: String, name: String, state: PhoneState, now: Lon
     Section("Find and reach") {
         // Three equal tonal tiles: icon above label, easy to hit with a thumb.
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            // Location opens the map page, which finds the device and shows where it has been.
-            ActionTile(Icons.Default.LocationOn, "Location", modifier = Modifier.weight(1f)) { onOpen("history") }
+            // Activity opens the map page, which finds the device and shows where it has been and what it did.
+            ActionTile(Icons.Default.LocationOn, "Activity", modifier = Modifier.weight(1f)) { onOpen("history") }
             if (state.ringing) {
                 ActionTile(Icons.Default.Notifications, "Stop ringing", highlighted = true,
                     modifier = Modifier.weight(1f)) { PhoneTools.stopRinging(dev) }
             } else {
-                ActionTile(Icons.Default.Notifications, "Ring", modifier = Modifier.weight(1f)) { confirmRing = true }
+                // Waiting shows in the tile itself, so nothing on the page moves.
+                val asking = isWaiting(dev, "ring")
+                ActionTile(Icons.Default.Notifications, if (asking) "Ringing…" else "Ring", enabled = !asking,
+                    modifier = Modifier.weight(1f)) { confirmRing = true }
             }
             ActionTile(Icons.Default.Face, if (dev in capturing) "Capturing…" else "View screen",
                 enabled = dev !in capturing, modifier = Modifier.weight(1f)) { PhoneTools.viewScreen(dev) }
         }
-        // Second row, same widths: pages for calls, contacts and files.
+        // Ringing is confirmed by the device's state rather than a reply to the request.
+        LaunchedEffect(state.ringing) { if (state.ringing) Pending.clear(dev, "ring") }
+        // Second row: pages for calls, contacts, files and app time.
         MoreRow(onOpen)
 
         screens[dev]?.let { ScreenResult(dev, it, capturing = dev in capturing) }
     }
 
-    if (confirmRing) AlertDialog(
+    if (confirmRing) AppDialog(
         onDismissRequest = { confirmRing = false },
         title = { Text("Ring $name?") },
         text = { Text("It rings at full volume for 2 minutes, even on silent, until someone taps Stop.") },

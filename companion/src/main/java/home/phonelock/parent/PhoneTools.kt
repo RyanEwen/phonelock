@@ -72,14 +72,22 @@ object PhoneTools {
     private fun request(dev: String, type: String, inFlight: MutableStateFlow<Set<String>>,
                         extra: (JSONObject) -> Unit = {}) {
         inFlight.update { it + dev }
-        Hub.send(dev, track(dev, Hub.msg(type).also(extra)))
+        // Also tracked by Pending, so screens can say when the device is slow or doesn't answer.
+        val m = track(dev, Hub.msg(type).also(extra))
+        Pending.start(dev, type, m.getString("id"))
+        Hub.send(dev, m)
         // Handler matches tokens by identity, so reuse one token object per (kind, device).
         val token = synchronized(timeoutTokens) { timeoutTokens.getOrPut("$type/$dev") { Any() } }
         main.removeCallbacksAndMessages(token)
         main.postDelayed({ inFlight.update { it - dev } }, token, REPLY_TIMEOUT_MS)
     }
 
-    fun ring(dev: String, seconds: Int = 120) = Hub.send(dev, Hub.msg("ring").put("op", "start").put("seconds", seconds))
+    /** Rings [dev]; the wait ends when its state says it's ringing (the reply carries no request id). */
+    fun ring(dev: String, seconds: Int = 120) {
+        val m = Hub.msg("ring").put("op", "start").put("seconds", seconds)
+        Pending.start(dev, "ring", m.getString("id"))
+        Hub.send(dev, m)
+    }
 
     fun stopRinging(dev: String) = Hub.send(dev, Hub.msg("ring").put("op", "stop"))
 
@@ -138,7 +146,7 @@ object PhoneTools {
         try {
             Geocoder(app).getFromLocation(loc.lat!!, loc.lng!!, 1) { results ->
                 val line = results.firstOrNull()?.getAddressLine(0) ?: return@getFromLocation
-                // Only fill in the fix it belongs to; a newer "Location" tap may have replaced it.
+                // Only fill in the fix it belongs to; a newer "Activity" tap may have replaced it.
                 _locations.update { m ->
                     val cur = m[dev]
                     if (cur?.ts == loc.ts) m + (dev to cur.copy(address = line)) else m

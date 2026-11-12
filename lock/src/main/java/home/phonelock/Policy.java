@@ -229,6 +229,15 @@ public final class Policy {
         return out;
     }
 
+    /**
+     * Records when parent mode ends (0: it's off), and tells {@link AppTime} so a parent's time on the device
+     * isn't counted against the child's app limits. Every change to parent mode goes through here.
+     */
+    static void storeParentUntil(Context c, long untilMs) {
+        prefs(c).edit().putLong("parent_until", untilMs).commit();
+        AppTime.noteParentMode(c, untilMs);
+    }
+
     static boolean inParentMode(Context c) {
         return System.currentTimeMillis() < prefs(c).getLong("parent_until", 0);
     }
@@ -238,7 +247,7 @@ public final class Policy {
      * home screen forward so it leaves or enters lock task and shows or hides the parent bar.
      */
     static void setParentMode(Context c, long untilMs) {
-        prefs(c).edit().putLong("parent_until", untilMs).apply();
+        storeParentUntil(c, untilMs);
         // In the background, like the home screen's own updates: a full apply can take seconds.
         applySoon(c);
         c.startActivity(new Intent(c, HomeActivity.class)

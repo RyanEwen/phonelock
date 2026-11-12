@@ -78,7 +78,7 @@ object LocationHistory {
     /** Asks [dev] for entries since the newest one held here (or the full 7 days). */
     fun requestNewer(dev: String) {
         val newest = _places.value[dev]?.firstOrNull()?.from ?: 0L
-        Hub.send(dev, Hub.msg("track").put("since", newest))
+        Pending.send(dev, "track", Hub.msg("track").put("since", newest))
     }
 
     /** A `track` message from [dev]: new or extended entries (it may also be just a heartbeat). */

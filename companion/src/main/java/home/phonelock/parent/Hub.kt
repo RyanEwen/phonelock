@@ -64,6 +64,11 @@ data class PhoneState(
     val battAlert: Int = -1,
     /** True once a full state (with app lists, table and schedule) has arrived; editing waits for it. */
     val full: Boolean = false,
+    /** Whether the screen was on when this state was sent (null: the lock app is too old to say). */
+    val screenOn: Boolean? = null,
+    /** The app in front when this state was sent ("" for none) and when it was opened. */
+    val using: String = "",
+    val usingSince: Long = 0,
 ) {
     fun label(pkg: String) = labels[pkg] ?: pkg
 }
@@ -89,6 +94,7 @@ class App : Application() {
         PhoneTools.init(this)
         DeviceData.init(this)
         LocationHistory.init(this)
+        AppTime.init(this)
         ChildSetup.init(this)
         Push.init(this)
         Push.sync(Hub.devices.value)
@@ -238,6 +244,8 @@ object Hub {
         AppIconCache.forget(id)
         PhoneTools.forget(id)
         Diagnostics.forget(id)
+        AppTime.forget(id)
+        Pending.forget(id)
         _requests.update { l -> l.filterNot { it.device == id } }
         saveDevices(); saveStates(); saveEvents(); saveRequests(); saveVitals()
         if (_devices.value.isEmpty()) ParentService.stop(app) else ParentService.restart(app)
@@ -287,17 +295,31 @@ object Hub {
     }
 
     fun grant(dev: String, app: String, minutes: Long, req: String? = null) {
+        // Show it at once (the latest grant or block on an app replaces the other); the device confirms.
+        val until = System.currentTimeMillis() + minutes * 60_000
+        editState(dev) { it.copy(grants = it.grants + (app to until), blocks = it.blocks - app) }
         send(dev, msg("grant").put("app", app).put("minutes", minutes).apply { req?.let { put("req", it) } })
         req?.let(::resolve)
     }
 
-    fun revoke(dev: String, app: String) = send(dev, msg("revoke").put("app", app))
+    /** Ends [app]'s allowed-for-a-while time, or every app's with "all"; shown at once. */
+    fun revoke(dev: String, app: String) {
+        editState(dev) { if (app == "all") it.copy(grants = emptyMap()) else it.copy(grants = it.grants - app) }
+        send(dev, msg("revoke").put("app", app))
+    }
 
     /** Takes a normally allowed [app] away for [minutes]; allowing it again ([grant] or [unblock]) ends that. */
-    fun block(dev: String, app: String, minutes: Long) =
+    fun block(dev: String, app: String, minutes: Long) {
+        val until = System.currentTimeMillis() + minutes * 60_000
+        editState(dev) { it.copy(blocks = it.blocks + (app to until), grants = it.grants - app) }
         send(dev, msg("block").put("app", app).put("minutes", minutes))
+    }
 
-    fun unblock(dev: String, app: String) = send(dev, msg("unblock").put("app", app))
+    /** Ends a pause on [app] early; shown at once. */
+    fun unblock(dev: String, app: String) {
+        editState(dev) { it.copy(blocks = it.blocks - app) }
+        send(dev, msg("unblock").put("app", app))
+    }
 
     fun deny(r: Request) {
         send(r.device, msg("deny").put("req", r.req).put("label", r.label))
@@ -374,16 +396,30 @@ object Hub {
      * Recovery: turns USB and wireless debugging on on [dev] for [minutes] (0 turns them off), so it can be
      * repaired or updated over adb even if its screens can't be used. The device reports where to connect.
      */
-    fun debugging(dev: String, minutes: Long) = send(dev, msg("debug").put("minutes", minutes))
+    // The device reports how these went in Recent events; each says at once that it was sent.
+
+    fun debugging(dev: String, minutes: Long) {
+        send(dev, msg("debug").put("minutes", minutes))
+        Undo.notify(if (minutes > 0) "Asked ${deviceName(dev)}'s device to turn on debugging" else "Asked ${deviceName(dev)}'s device to turn off debugging")
+    }
 
     /** Asks [dev] to check for a lock app update now; it installs the next time the screen is off. */
-    fun updateNow(dev: String) = send(dev, msg("update"))
+    fun updateNow(dev: String) {
+        send(dev, msg("update"))
+        Undo.notify("Asked ${deviceName(dev)}'s device to check for an update. Results appear in Recent events.")
+    }
 
     /** Uninstalls [app] from [dev] (removes it and its data; only for apps the device reports removable). */
-    fun uninstall(dev: String, app: String) = send(dev, msg("uninstall").put("app", app))
+    fun uninstall(dev: String, app: String) {
+        send(dev, msg("uninstall").put("app", app))
+        Undo.notify("Asked ${deviceName(dev)}'s device to uninstall ${_states.value[dev]?.label(app) ?: app}")
+    }
 
     /** Sets the parent PIN on [dev] (4 to 8 digits). */
-    fun setPin(dev: String, pin: String) = send(dev, msg("pin").put("pin", pin))
+    fun setPin(dev: String, pin: String) {
+        send(dev, msg("pin").put("pin", pin))
+        Undo.notify("New parent PIN sent to ${deviceName(dev)}'s device")
+    }
 
     /** Replaces the device's call settings (limits and safe list), showing the change at once. */
     fun setCalls(dev: String, calls: CallSettings) {
@@ -458,8 +494,12 @@ object Hub {
         if (!markSeen(id, ts)) return
         val dev = d.id
         if (from == "phone") noteVitals(dev, m, ts)
+        // Any reply ends the wait its screen may be showing (handlers below still check it's for them).
+        if (from == "phone") Pending.answered(dev, m.optString("req"))
         when (m.optString("t")) {
             "state" -> if (from == "phone") {
+                // Limits and today's app use are kept by their own module (which keeps the newest itself).
+                AppTime.handleState(dev, m, ts)
                 val s = parseState(m)
                 val old = _states.value[dev]
                 // States can arrive out of order (a full one travels as a slower attachment): keep the newest.
@@ -518,6 +558,7 @@ object Hub {
             "loc", "shot" -> if (from == "phone") PhoneTools.handle(d, m, attachmentUrl)
             "track" -> if (from == "phone") LocationHistory.handle(dev, m)
             "diag" -> if (from == "phone") Diagnostics.handle(dev, m)
+            "usage" -> if (from == "phone") AppTime.handleUsage(dev, m)
             "icons" -> if (from == "phone") AppIconCache.handle(d, m, attachmentUrl)
             "calls", "contacts", "files", "file" -> if (from == "phone") DeviceData.handle(d, m, attachmentUrl)
             // Another parent answered a request.
@@ -548,7 +589,10 @@ object Hub {
             m.optJSONObject("can")?.optBoolean("files") ?: false,
             m.optJSONObject("can")?.optBoolean("calllog") ?: false,
             m.optInt("battAlert", -1),
-            m.has("others") || m.optBoolean("full"))
+            m.has("others") || m.optBoolean("full"),
+            if (m.has("screenOn")) m.optBoolean("screenOn") else null,
+            m.optJSONObject("using")?.optString("app") ?: "",
+            m.optJSONObject("using")?.optLong("since") ?: 0)
     }
 
     private fun stateJson(s: PhoneState) = JSONObject().put("ts", s.updated).put("name", s.name)
@@ -563,6 +607,10 @@ object Hub {
         .put("removable", JSONArray(s.removable.toList())).put("parentUntil", s.parentUntil).put("calls", s.calls.toJson())
         .put("can", JSONObject().put("files", s.canFiles).put("calllog", s.canCallLog))
         .put("battAlert", s.battAlert).put("full", s.full)
+        .also { o ->
+            s.screenOn?.let { o.put("screenOn", it) }
+            if (s.using.isNotEmpty()) o.put("using", JSONObject().put("app", s.using).put("since", s.usingSince))
+        }
 
     private fun saveStates() {
         val o = JSONObject()

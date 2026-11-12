@@ -10,7 +10,6 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.text.format.DateFormat
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -29,16 +28,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -144,7 +139,6 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
     val name = Hub.deviceName(dev)
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { delay(15_000); now = System.currentTimeMillis() } }
-    var menu by remember { mutableStateOf(false) }
     // Calls, Contacts or Files open as their own page over the main screen.
     var page by rememberSaveable(dev) { mutableStateOf<String?>(null) }
     var startingMode by remember(dev) { mutableStateOf(false) }
@@ -153,9 +147,12 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
         "contacts" -> { ContactsScreen(dev, state) { page = null }; return }
         "files" -> { FilesScreen(dev, state) { page = null }; return }
         "history" -> { LocationHistoryScreen(dev, name) { page = null }; return }
-        "diag" -> { DiagnosticsScreen(dev, name) { page = null }; return }
+        "settings" -> { SettingsScreen(dev, name, onOpen = { page = it }) { page = null }; return }
+        // Opened from Settings, so they go back there.
+        "diag" -> { DiagnosticsScreen(dev, name) { page = "settings" }; return }
+        "apptime" -> { AppTimeScreen(dev, name, state) { page = null }; return }
         "fixsetup" -> {
-            WifiSetupScreen(existing = devices.firstOrNull { it.id == dev }) { page = null }
+            WifiSetupScreen(existing = devices.firstOrNull { it.id == dev }) { page = "settings" }
             return
         }
     }
@@ -185,8 +182,8 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
             delay(21_000)
             now = System.currentTimeMillis()
         }
-        PhoneHeader(name, state, vitals[dev] ?: Vitals(), askedAt[dev] ?: 0L,
-            connected || (device != null && Push.covers(device)), now, onRefresh = { Hub.refresh(dev) }, onMenu = { menu = true },
+        PhoneHeader(dev, name, state, vitals[dev] ?: Vitals(), askedAt[dev] ?: 0L,
+            connected || (device != null && Push.covers(device)), now, onRefresh = { Hub.refresh(dev) }, onMenu = { page = "settings" },
             onLockNow = { Hub.parentMode(dev, 0) },
             onStartMode = { startingMode = true }, onEndMode = { Hub.endMode(dev) })
         if (startingMode) StartModeDialog(name, onPick = { mode, mins -> Hub.startMode(dev, mode, mins); startingMode = false },
@@ -221,10 +218,16 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
         }
         ScheduleSection(dev, state)
 
-        if (events.isNotEmpty()) Section("Activity") {
-            CappedList(events, key = dev) { e ->
-                Row {
-                    Text(time(e.ts), Modifier.width(72.dp), style = MaterialTheme.typography.labelMedium,
+        if (events.isNotEmpty()) Section("Recent events") {
+            // A day heading wherever the day changes (events run newest first), so times have a date.
+            val rows = events.mapIndexed { i, e ->
+                e to (i == 0 || startOfDay(events[i - 1].ts) != startOfDay(e.ts))
+            }
+            CappedList(rows, key = dev) { (e, newDay) ->
+                if (newDay) Text(dayName(startOfDay(e.ts), now), Modifier.padding(top = 6.dp),
+                    style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                Row(Modifier.padding(vertical = 2.dp)) {
+                    Text(time(e.ts), Modifier.width(76.dp), style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(e.text, style = MaterialTheme.typography.bodyMedium)
                 }
@@ -239,67 +242,8 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
     }
     }
 
-    if (menu) PhoneMenu(dev, name, onOpen = { page = it }) { menu = false }
 }
 
-@Composable
-private fun PhoneMenu(dev: String, name: String, onOpen: (String) -> Unit, close: () -> Unit) {
-    var rename by remember { mutableStateOf(name) }
-    var you by remember { mutableStateOf(Hub.parentName.value) }
-    var confirmRemove by remember { mutableStateOf(false) }
-    var sharing by remember { mutableStateOf(false) }
-    var parentMode by remember { mutableStateOf(false) }
-    var changingPin by remember { mutableStateOf(false) }
-    var recovery by remember { mutableStateOf(false) }
-    if (recovery) DebuggingDialog(name, onPick = { Hub.debugging(dev, it); recovery = false; close() },
-        onDismiss = { recovery = false })
-    if (parentMode) ParentModeDialog(name, onPick = { Hub.parentMode(dev, it); parentMode = false; close() },
-        onDismiss = { parentMode = false })
-    if (changingPin) PinDialog(onSave = { Hub.setPin(dev, it); changingPin = false; close() },
-        onDismiss = { changingPin = false })
-    AlertDialog(
-        onDismissRequest = close,
-        title = { Text("Settings") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(rename, { rename = it }, label = { Text("Child's device name") }, singleLine = true)
-                OutlinedTextField(you, { you = it }, label = { Text("Your name") }, singleLine = true,
-                    supportingText = { Text("Shown on their device") })
-                TextButton(onClick = { parentMode = true }) { Text("Parent mode…") }
-                // Lock app version on the device, and its self-update.
-                val st = Hub.states.collectAsState().value[dev]
-                Text(buildString {
-                    append("Lock app version ${st?.version?.takeIf { it > 0 } ?: "unknown"}")
-                    st?.updateReady?.takeIf { it > 0 }?.let { append(" · version $it installs when the screen is next off") }
-                }, style = MaterialTheme.typography.bodySmall)
-                TextButton(onClick = { Hub.updateNow(dev); close() }) { Text("Check for update now") }
-                TextButton(onClick = { close(); onOpen("diag") }) { Text("Diagnostics…") }
-                TextButton(onClick = { close(); onOpen("fixsetup") }) { Text("Fix setup over Wi-Fi…") }
-                TextButton(onClick = { recovery = true }) { Text("Recovery: turn on debugging…") }
-                BatteryAlertSetting(dev, st)
-                TextButton(onClick = { changingPin = true }) { Text("Change parent PIN…") }
-                TextButton(onClick = { sharing = true }) { Text("Share with another parent…") }
-                TextButton(onClick = { confirmRemove = true }) { Text("Remove this device…") }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                if (rename.isNotBlank()) Hub.renameDevice(dev, rename)
-                if (you.isNotBlank()) Hub.setParentName(you)
-                close()
-            }) { Text("Save") }
-        },
-        dismissButton = { TextButton(onClick = close) { Text("Close") } })
-    if (sharing) Hub.devices.value.firstOrNull { it.id == dev }?.let { d ->
-        SharePhoneDialog(d.copy(name = name)) { sharing = false }
-    }
-    if (confirmRemove) AlertDialog(
-        onDismissRequest = { confirmRemove = false },
-        title = { Text("Remove $name?") },
-        text = { Text("This app stops managing it. The device stays locked; you'll need its pairing QR code to add it again.") },
-        confirmButton = { TextButton(onClick = { Hub.removeDevice(dev); confirmRemove = false; close() }) { Text("Remove") } },
-        dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("Cancel") } })
-}
 
 @SuppressLint("BatteryLife")
 @Composable
@@ -324,10 +268,17 @@ private fun BatteryHint() {
     }
 }
 
+/**
+ * The colour of section cards: a step lighter than the page in dark mode and a step darker in light mode, so
+ * cards stand apart without relying on shadows (an elevated card's shadow is invisible on a dark page).
+ */
+@Composable
+internal fun sectionCardColors() = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh)
+
 @Composable
 internal fun Section(title: String, content: @Composable () -> Unit) {
-    // Soft, borderless cards with a little more room; the shared shape for every section.
-    ElevatedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+    // Soft, borderless cards with a little more room; the shared shape and colour for every section.
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), colors = sectionCardColors()) {
         Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             content()

@@ -11,8 +11,10 @@ REPO=RyanEwen/phonelock
 git fetch -q origin main
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || { echo "push first"; exit 1; }
 
-# Same memory cap as other Android builds on this machine.
-systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 bash ./build.sh
+# Memory-capped, single worker with in-process Kotlin: the settings that build reliably on this machine
+# alongside other work (larger parallel builds have been OOM-killed).
+systemd-run --user --scope -q -p MemoryMax=3500M -p MemorySwapMax=0 env GRADLE_OPTS=-Xmx1600m \
+  bash ./build.sh --max-workers=1 -Pkotlin.compiler.execution.strategy=in-process
 lock=lock/build/outputs/apk/release/lock-release.apk
 parent=companion/build/outputs/apk/release/companion-release.apk
 version=$(git rev-list --count HEAD)

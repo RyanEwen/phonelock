@@ -30,6 +30,8 @@ public final class Grants {
     }
 
     static void save(Context c, Map<String, Long> m) {
+        // Time while an app is allowed this way is extra: it isn't counted against its daily limit.
+        AppTime.noteGrants(c, load(c), m);
         saveTimed(c, "grants", m);
     }
 

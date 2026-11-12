@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Files opened from a child's phone ("Open" in Files): a private temporary folder, shared one file at a
+     time with the viewer app the parent picks. Nothing else in this app is reachable through it. -->
+<paths>
+    <cache-path name="opened" path="opened/" />
+</paths>

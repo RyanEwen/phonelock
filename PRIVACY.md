@@ -1,8 +1,8 @@
 # PhoneLock privacy policy
 
-Last updated: [DATE]
+Last updated: 11 November 2026
 
-PhoneLock is a parental control app made by [ORGANIZATION NAME] ("we"). It has two parts: the **parent app** (on a parent's phone) and the **lock app** (on the child's phone or tablet). This policy explains what information they handle and who can read it.
+PhoneLock is a parental control app made by Dynamic Solutions ("we"). It has two parts: the **parent app** (on a parent's phone) and the **lock app** (on the child's phone or tablet). This policy explains what information they handle and who can read it.
 
 ## The short version
 
@@ -32,7 +32,7 @@ Each child device has its own secret key, created at setup and shared only with 
 
 ## Servers and services
 
-- **Relay server ("hub")**: messages pass through our self-hosted relay at phonelock.dynamic-solutions.ca. It stores encrypted messages for up to 24 hours and encrypted attachments for up to 3 hours so devices that were offline can catch up, then deletes them. Like any web server, it sees the IP address of each connecting device and the random channel name the devices share, and keeps access logs for security and rate limiting for [N] days.
+- **Relay server ("hub")**: messages pass through our self-hosted relay at phonelock.dynamic-solutions.ca. It stores encrypted messages for up to 24 hours and encrypted attachments for up to 3 hours so devices that were offline can catch up, then deletes them. Like any web server, it sees the IP address of each connecting device and the random channel name the devices share, and keeps access logs for security and rate limiting for 14 days.
 - **Google Firebase Cloud Messaging**: delivers notifications to the parent app. Google receives the same encrypted messages and a device token for the parent's phone, under [Google's privacy policy](https://policies.google.com/privacy).
 - **GitHub**: the lock app checks GitHub's public release page for updates and downloads them from there.
 - **Address lookup**: the parent app turns locations into street addresses with Android's built-in geocoder, which on most phones is provided by Google, so Google receives those positions (without knowing whose device they came from).
@@ -55,6 +55,6 @@ Parents can stop sharing at any time by removing the device from the parent app,
 
 ## Contact
 
-[CONTACT EMAIL]
+contact@dynamic-solutions.ca
 
 We'll post changes to this policy here and update the date above.

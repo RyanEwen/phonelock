@@ -57,6 +57,17 @@
             </intent-filter>
         </service>
 
+        <!-- Lets a viewer app read one file opened from a child's phone (temporary, cache only). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.opened"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/opened_files" />
+        </provider>
+
         <receiver android:name=".ActionReceiver" android:exported="false" />
 
         <receiver android:name=".BootReceiver" android:exported="true">

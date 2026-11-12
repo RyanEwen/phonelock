@@ -404,7 +404,7 @@ public class HomeActivity extends Activity {
     }
 
     private void endParentMode() {
-        Policy.prefs(this).edit().putLong("parent_until", 0).apply();
+        Policy.storeParentUntil(this, 0);
         Policy.applySoon(this);
         startActivity(new Intent(this, HomeActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                 | Intent.FLAG_ACTIVITY_CLEAR_TOP));
@@ -482,8 +482,7 @@ public class HomeActivity extends Activity {
     private void unlockWith(String pin) {
         long r = Policy.checkPin(this, pin);
         if (r == 0) {
-            Policy.prefs(this).edit()
-                    .putLong("parent_until", System.currentTimeMillis() + 15 * 60_000L).apply();
+            Policy.storeParentUntil(this, System.currentTimeMillis() + 15 * 60_000L);
             Policy.applySoon(this);
             enforceLockTask();
         } else if (r > 0) {

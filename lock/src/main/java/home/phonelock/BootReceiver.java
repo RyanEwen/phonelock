@@ -9,7 +9,7 @@ public class BootReceiver extends BroadcastReceiver {
     public void onReceive(Context c, Intent i) {
         // A reboot always ends parent mode.
         if (!Intent.ACTION_MY_PACKAGE_REPLACED.equals(i.getAction())) {
-            Policy.prefs(c).edit().putLong("parent_until", 0).apply();
+            Policy.storeParentUntil(c, 0);
         }
         // Pairs with "Turning off": parents see when it came back, even if it starts without signal.
         if (Intent.ACTION_BOOT_COMPLETED.equals(i.getAction())) {

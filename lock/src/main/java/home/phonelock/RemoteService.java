@@ -149,6 +149,7 @@ public class RemoteService extends Service {
             // A few times a day, look for a lock app update (on its own thread: a download can take a while).
             if (Updater.checkDue(this)) new Thread(() -> Updater.check(this, null), "update").start();
             Debugging.expireIfDue(this);
+            AppTime.tick(this, false);
             int mode = Schedule.currentMode(this);
             if (mode != lastMode) {
                 lastMode = mode;

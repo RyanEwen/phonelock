@@ -16,17 +16,22 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.receiveAsFlow
 
 /**
- * "Done. Undo" messages for changes that are easy to make by mistake (ticking a box, hiding an app).
- * Anything can call [offer]; [UndoHost] shows them at the bottom of the screen, one at a time.
+ * "Done. Undo" messages for changes that are easy to make by mistake (ticking a box, hiding an app), and
+ * plain notices that a request was sent ([notify]). [UndoHost] shows them at the bottom, one at a time.
  */
 object Undo {
-    private class Item(val text: String, val undo: () -> Unit)
+    private class Item(val text: String, val undo: (() -> Unit)?)
 
     private val items = Channel<Item>(Channel.CONFLATED)
 
     /** Shows [text] with an Undo button that runs [undo]. A newer message replaces a pending one. */
     fun offer(text: String, undo: () -> Unit) {
         items.trySend(Item(text, undo))
+    }
+
+    /** Shows [text] with no action: confirms that something was sent when its result comes later. */
+    fun notify(text: String) {
+        items.trySend(Item(text, null))
     }
 
     /** The snackbar area; place once at the root of the screen. */
@@ -36,8 +41,9 @@ object Undo {
         LaunchedEffect(Unit) {
             items.receiveAsFlow().collect { item ->
                 host.currentSnackbarData?.dismiss()
-                val result = host.showSnackbar(item.text, actionLabel = "Undo", duration = SnackbarDuration.Short)
-                if (result == SnackbarResult.ActionPerformed) item.undo()
+                val result = host.showSnackbar(item.text, actionLabel = item.undo?.let { "Undo" },
+                    duration = SnackbarDuration.Short)
+                if (result == SnackbarResult.ActionPerformed) item.undo?.invoke()
             }
         }
         SnackbarHost(host, Modifier.align(Alignment.BottomCenter).safeDrawingPadding())

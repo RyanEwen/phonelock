@@ -255,11 +255,12 @@ final class Schedule {
 
     /**
      * Scheduled apps allowed in the current situation, in home-screen order, minus any a parent has blocked
-     * for a while ({@link Grants#loadBlocks}).
+     * for a while ({@link Grants#loadBlocks}) and any whose daily time limit has run out ({@link AppTime}).
      */
     static List<String> allowedNow(Context c) {
         int mode = currentMode(c);
-        java.util.Set<String> blocked = Grants.loadBlocks(c).keySet();
+        java.util.Set<String> blocked = new java.util.HashSet<>(Grants.loadBlocks(c).keySet());
+        blocked.addAll(AppTime.blockedApps(c));
         List<String> out = new ArrayList<>();
         for (Map.Entry<String, Integer> e : masks(c).entrySet()) {
             if ((e.getValue() & mode) != 0 && !blocked.contains(e.getKey())) out.add(e.getKey());

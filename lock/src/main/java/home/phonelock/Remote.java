@@ -289,6 +289,16 @@ public final class Remote {
                 sendState(c, false);
                 break;
             }
+            case "limits":
+                // Daily app time limits, the whole list (a parent's edit replaces it).
+                AppTime.setLimits(c, m.optJSONArray("limits"));
+                event(c, who + " changed the app time limits", who, false);
+                sendState(c, false);
+                break;
+            case "usage":
+                // A parent's report asks for the daily record from a date on.
+                AppTime.sendHistory(c, m.optString("since"), m.optString("req"));
+                break;
             case "update":
                 // "Update now" from a parent: check, download and install when the screen is next off.
                 new Thread(() -> Updater.check(c, who), "update").start();
@@ -338,7 +348,7 @@ public final class Remote {
                 long mins = Math.max(0, Math.min(12 * 60, m.optLong("minutes", 15)));
                 long until = mins == 0 ? 0 : System.currentTimeMillis() + mins * 60_000L;
                 // Store it now so the state sent below already shows it; the UI change runs on the main thread.
-                Policy.prefs(c).edit().putLong("parent_until", until).commit();
+                Policy.storeParentUntil(c, until);
                 c.getMainExecutor().execute(() -> Policy.setParentMode(c, until));
                 String txt = mins == 0 ? "Parent mode ended" : "Parent mode on until " + time(c, until);
                 notifyKid(c, txt + " (" + who + ")");
@@ -542,6 +552,7 @@ public final class Remote {
                         .put("until", Schedule.overrideUntil(c)));
             }
             o.put("modeUntil", Schedule.currentModeUntil(c));
+            AppTime.putState(c, o);
             if (full) {
                 JSONArray inst = new JSONArray();
                 for (String p : otherApps(c)) {
@@ -563,6 +574,15 @@ public final class Remote {
                         .put("calllog", CallLogFeed.permitted(c)));
                 o.put("schedule", Schedule.rulesJson(c));
                 o.put("battAlert", Battery.alertAt(c));
+            }
+            // What the child is doing right now, for the parents' status card: screen on or off, and the app in front.
+            android.os.PowerManager pm = c.getSystemService(android.os.PowerManager.class);
+            boolean screenOn = pm == null || pm.isInteractive();
+            o.put("screenOn", screenOn);
+            JSONObject using = screenOn ? AppUsage.current(c) : null;
+            if (using != null) {
+                o.put("using", using);
+                labels.put(using.getString("app"), label(c, using.getString("app")));
             }
             o.put("labels", labels);
             publish(c, o, null);

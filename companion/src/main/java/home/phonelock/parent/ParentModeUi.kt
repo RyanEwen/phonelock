@@ -3,7 +3,6 @@ package home.phonelock.parent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -26,18 +25,10 @@ private val PARENT_MODE_MINUTES = listOf(15L, 60L, 240L)
  */
 @Composable
 internal fun ParentModeDialog(name: String, onPick: (Long) -> Unit, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Unlock $name for a parent?") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Settings and the Play Store open on their device for anyone holding it. It locks again " +
-                    "when the time ends or the screen turns off.", style = MaterialTheme.typography.bodyMedium)
-                PARENT_MODE_MINUTES.forEach { m -> TextButton(onClick = { onPick(m) }) { Text(fmtMinutes(m)) } }
-            }
-        },
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+    OptionsDialog("Unlock $name for a parent?", onDismiss,
+        note = "Settings and the Play Store open on their device for anyone holding it. It locks again " +
+            "when the time ends or the screen turns off.",
+        options = PARENT_MODE_MINUTES.map { m -> MenuEntry("For ${fmtMinutes(m)}") { onPick(m) } })
 }
 
 /** New parent PIN, typed twice. 4 to 8 digits, like the setup screen. */
@@ -46,7 +37,7 @@ internal fun PinDialog(onSave: (String) -> Unit, onDismiss: () -> Unit) {
     var pin by remember { mutableStateOf("") }
     var again by remember { mutableStateOf("") }
     val valid = pin.length in 4..8 && pin.all(Char::isDigit)
-    AlertDialog(
+    AppDialog(
         onDismissRequest = onDismiss,
         title = { Text("Change parent PIN") },
         text = {
@@ -78,17 +69,7 @@ internal fun StartModeDialog(name: String, onPick: (String, Long) -> Unit, onDis
         LengthDialog("${modeLabel(chosen)} for how long?", onPick = { onPick(chosen, it) }, onDismiss = onDismiss)
         return
     }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Start on $name's device") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Only the apps ticked for it are available. A stricter schedule still applies.",
-                    style = MaterialTheme.typography.bodyMedium)
-                TextButton(onClick = { mode = "limited" }) { Text("Limited hours") }
-                TextButton(onClick = { mode = "bedtime" }) { Text("Bedtime") }
-            }
-        },
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
+    OptionsDialog("Start on $name's device", onDismiss,
+        note = "Only the apps ticked for it are available. A stricter schedule still applies.",
+        options = listOf(MenuEntry("Limited hours") { mode = "limited" }, MenuEntry("Bedtime") { mode = "bedtime" }))
 }
