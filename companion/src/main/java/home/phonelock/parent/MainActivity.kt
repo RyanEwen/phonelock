@@ -209,6 +209,8 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
             }
         }
 
+        ScreenAlertsSection(dev)
+
         FindAndReach(dev, name, state, now) { page = it }
 
         AllowedNowSection(dev, state, now)

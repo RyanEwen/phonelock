@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="screen_service_description">Lets a parent see this screen when they ask. You get a notice each time.</string>
+    <string name="screen_service_description">Lets a parent see this screen when they ask, and keeps Google screens that leave the lock shut. Unfamiliar Google screens are sent to your parents as a picture. You get a notice each time.</string>
 </resources>

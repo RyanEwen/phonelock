@@ -51,3 +51,8 @@ android {
 configurations.matching { it.name.endsWith('RuntimeClasspath') || it.name.endsWith('CompileClasspath') }.configureEach {
     exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib'
 }
+
+dependencies {
+    // Tests only, never shipped.
+    testImplementation 'junit:junit:4.13.2'
+}

@@ -69,6 +69,8 @@ data class PhoneState(
     /** The app in front when this state was sent ("" for none) and when it was opened. */
     val using: String = "",
     val usingSince: Long = 0,
+    /** Parents' decisions about Google services screens: screen class -> "ok" or "block" (full state). */
+    val screenRules: Map<String, String> = emptyMap(),
 ) {
     fun label(pkg: String) = labels[pkg] ?: pkg
 }
@@ -93,6 +95,7 @@ class App : Application() {
         AppIconCache.init(this)
         PhoneTools.init(this)
         DeviceData.init(this)
+        ScreenAlerts.init(this)
         LocationHistory.init(this)
         AppTime.init(this)
         ChildSetup.init(this)
@@ -247,6 +250,7 @@ object Hub {
         Diagnostics.forget(id)
         AppTime.forget(id)
         Pending.forget(id)
+        ScreenAlerts.forget(id)
         _requests.update { l -> l.filterNot { it.device == id } }
         saveDevices(); saveStates(); saveEvents(); saveRequests(); saveVitals()
         if (_devices.value.isEmpty()) ParentService.stop(app) else ParentService.restart(app)
@@ -354,6 +358,15 @@ object Hub {
     private fun editState(dev: String, change: (PhoneState) -> PhoneState) {
         _states.update { m -> m[dev]?.let { m + (dev to change(it)) } ?: m }
         saveStates()
+    }
+
+    /**
+     * Records a decision about Google services screen [screen] on [dev]: "ok" (never report it), "block"
+     * (send her back from it), or "" (forget the decision; it's reported again next time).
+     */
+    fun setScreenRule(dev: String, screen: String, rule: String) {
+        editState(dev) { st -> st.copy(screenRules = if (rule.isEmpty()) st.screenRules - screen else st.screenRules + (screen to rule)) }
+        send(dev, msg("screenrule").put("screen", screen).put("rule", rule))
     }
 
     /** Replaces the phone's weekly schedule. */
@@ -511,7 +524,7 @@ object Hub {
                         _states.update { it + (dev to old.copy(others = s.others.filterNot { p -> p in old.home },
                             notOffered = s.notOffered, labels = s.labels + old.labels, masks = s.masks,
                             schedule = s.schedule, calls = s.calls, canFiles = s.canFiles, canCallLog = s.canCallLog,
-                            removable = s.removable, battAlert = s.battAlert, full = true)) }
+                            removable = s.removable, battAlert = s.battAlert, screenRules = s.screenRules, full = true)) }
                         saveStates()
                     }
                     return
@@ -522,7 +535,7 @@ object Hub {
                     else s.copy(others = old.others.filterNot { it in s.home }, notOffered = old.notOffered, labels = old.labels + s.labels,
                         masks = old.masks, schedule = old.schedule, full = old.full, calls = old.calls,
                         canFiles = old.canFiles, canCallLog = old.canCallLog, removable = old.removable,
-                        battAlert = old.battAlert)
+                        battAlert = old.battAlert, screenRules = old.screenRules)
                 _states.update { it + (dev to merged) }
                 saveStates()
                 AppIconCache.ensure(d, merged.home + merged.others + merged.notOffered + merged.grants.keys)
@@ -557,6 +570,7 @@ object Hub {
                     ?.let { dispatch(d, it, null) }
             }
             "loc", "shot" -> if (from == "phone") PhoneTools.handle(d, m, attachmentUrl)
+            "seen" -> if (from == "phone") ScreenAlerts.handle(d, m, attachmentUrl)
             "track" -> if (from == "phone") LocationHistory.handle(dev, m)
             "diag" -> if (from == "phone") Diagnostics.handle(dev, m)
             "usage" -> if (from == "phone") AppTime.handleUsage(dev, m)
@@ -593,7 +607,8 @@ object Hub {
             m.has("others") || m.optBoolean("full"),
             if (m.has("screenOn")) m.optBoolean("screenOn") else null,
             m.optJSONObject("using")?.optString("app") ?: "",
-            m.optJSONObject("using")?.optLong("since") ?: 0)
+            m.optJSONObject("using")?.optLong("since") ?: 0,
+            m.optJSONObject("screenRules")?.let { o -> o.keys().asSequence().associateWith { o.getString(it) } } ?: emptyMap())
     }
 
     private fun stateJson(s: PhoneState) = JSONObject().put("ts", s.updated).put("name", s.name)
@@ -607,7 +622,7 @@ object Hub {
         .put("manual", JSONObject().put("mode", s.manualMode).put("until", s.manualUntil))
         .put("removable", JSONArray(s.removable.toList())).put("parentUntil", s.parentUntil).put("calls", s.calls.toJson())
         .put("can", JSONObject().put("files", s.canFiles).put("calllog", s.canCallLog))
-        .put("battAlert", s.battAlert).put("full", s.full)
+        .put("battAlert", s.battAlert).put("full", s.full).put("screenRules", JSONObject(s.screenRules as Map<*, *>))
         .also { o ->
             s.screenOn?.let { o.put("screenOn", it) }
             if (s.using.isNotEmpty()) o.put("using", JSONObject().put("app", s.using).put("since", s.usingSince))

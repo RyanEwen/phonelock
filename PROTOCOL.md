@@ -1,6 +1,6 @@
 # Parent ⇄ phone protocol
 
-Transport: one private ntfy topic (on ntfy.sh or the PhoneLock hub; on the hub every message is also pushed through Firebase to the FCM topic of the same name, and the phone marks requests, notable events, `loc` and `shot` with ntfy priority 4 for high-priority delivery) (`secrets/pairing.properties`). Every message body is
+Transport: one private ntfy topic (on ntfy.sh or the PhoneLock hub; on the hub every message is also pushed through Firebase to the FCM topic of the same name, and the phone marks requests, notable events, `loc`, `shot` and `seen` with ntfy priority 4 for high-priority delivery) (`secrets/pairing.properties`). Every message body is
 `base64url(iv[12] ‖ AES-256-GCM(ciphertext ‖ tag))` with AAD `phonelock/1`, keyed by the 32-byte pairing
 secret. Anything that doesn't decrypt is ignored, so the topic name alone can't control the phone and
 readers of the topic see only ciphertext.
@@ -47,6 +47,7 @@ Plaintext is JSON with common fields:
 | `limits` | `limits` [{`id`, `name` (group name, "" for one app), `apps` [pkg], `min` [7 ints, Sunday first: minutes allowed that day, -1 = no limit]}] | replaces the daily app time limits; apps whose limit ran out leave the home screen until midnight; grant time and parent mode don't count; phone replies with `state` and an `event` |
 | `usage` | `since` (`yyyy-MM-dd`), `req` | phone replies with `usage`: its daily record (kept 400 days) from that day on |
 | `ring` | `op` (`start`/`stop`), `seconds`? (10–300, default 120) | ring at full alarm volume with a Stop screen; `start` while ringing extends it |
+| `screenrule` | `screen` (Google services screen class), `rule` (`ok`, `block`, or `""` to forget) | a parent's decision about a screen the phone's screen guard watches; shared by all parents; phone replies with `state` (`full`) and an `event` |
 | `screen` | | phone replies with `shot` (`req` = this message's `id`) and always shows the kid "<from> viewed your screen" |
 
 `grant`/`deny` with `req` also tell the other parent's app that the request was answered.
@@ -55,7 +56,7 @@ Plaintext is JSON with common fields:
 
 | `t` | fields |
 |---|---|
-| `state` | `name`, `grants` {pkg: untilMs}, `blocks` {pkg: untilMs}, with `full`: `calls` {`limitOut`, `limitIn`, `safe`} and `can` {`files`, `calllog`}, `home` [pkg], `others` [pkg]?, `labels` {pkg: label}, `parent`, `parentUntil` (ms, 0 when off), `ringing`, `version` (lock app versionCode), `updateReady`? (downloaded version waiting for screen-off), `removable` [pkg]? (with `full`: apps that can be uninstalled), `notOffered` [pkg]? (with `full`: apps taken off the grantable list), `mode` (`normal`/`limited`/`bedtime`, schedule and manual combined), `modeUntil` (ms, 0 = no schedule), `manual` {`mode`, `until`}? (a situation started by hand), with `full`: `masks` {pkg: mask}, `schedule` [rule], `battAlert` (low-battery threshold %, 0 = off); always: `batt` (%), `chg` (charging), `limits` [limit], `appTime` {`day`, `apps` {pkg: minutes today}, `used` {limit id: counted minutes}, `out` [limit id], `labels` {pkg: label}}, `screenOn`, `using` {`app`, `since` (ms, when it was opened)}? (the app in front, absent when none) |
+| `state` | `name`, `grants` {pkg: untilMs}, `blocks` {pkg: untilMs}, with `full`: `calls` {`limitOut`, `limitIn`, `safe`} and `can` {`files`, `calllog`}, `home` [pkg], `others` [pkg]?, `labels` {pkg: label}, `parent`, `parentUntil` (ms, 0 when off), `ringing`, `version` (lock app versionCode), `updateReady`? (downloaded version waiting for screen-off), `removable` [pkg]? (with `full`: apps that can be uninstalled), `notOffered` [pkg]? (with `full`: apps taken off the grantable list), `mode` (`normal`/`limited`/`bedtime`, schedule and manual combined), `modeUntil` (ms, 0 = no schedule), `manual` {`mode`, `until`}? (a situation started by hand), with `full`: `masks` {pkg: mask}, `schedule` [rule], `battAlert` (low-battery threshold %, 0 = off), `screenRules` {screen class: `ok`/`block`}; always: `batt` (%), `chg` (charging), `limits` [limit], `appTime` {`day`, `apps` {pkg: minutes today}, `used` {limit id: counted minutes}, `out` [limit id], `labels` {pkg: label}}, `screenOn`, `using` {`app`, `since` (ms, when it was opened)}? (the app in front, absent when none) |
 | `event` | `text` (human readable; e.g. "Dad: WhatsApp allowed until 6:00 PM", "Time's up: WhatsApp"), `by`? (the parent whose action it was), `quiet`? (routine; list only, no notification). "Battery low: N%" and "Turned on" are kept and retried until sent (a late one says "(at 3:02 PM)"); "Turning off" is best effort, sent while the device shuts down |
 | `req` | `req` (id), `app`, `label`, `minutes`; kid tapped "Ask for an app" (rate-limited to 1/min) |
 | `loc` | `req`, `lat`, `lng`, `acc` (m), `fix` (ms), `prov`, `batt` (%), `chg`, `error`?; position fields are absent when no fix was available |
@@ -69,6 +70,7 @@ Plaintext is JSON with common fields:
 | `icons` | `req`; with an attachment holding JSON {pkg: base64 WebP, 96 px} |
 | `usage` | `req`, `days` {`yyyy-MM-dd`: {pkg: minutes}}, `labels` {pkg: label}, `error`? (usage access missing); usually sent as `big` |
 | `shot` | `req`, `app`?, `label`?, `error`?; with an attachment holding the screenshot unless `error` is set |
+| `seen` | `screen` (Google services screen class), `name` (short readable form), `from`? (label of the app it was opened from), `error`?; with an attachment holding the screenshot unless `error` is set. Sent unasked, at most once a day per screen, when a Google services screen opens that is neither known to be needed, blocked, nor decided by a parent; the kid is told the picture was sent |
 
 Temporary grants override the schedule, and temporary blocks remove scheduled apps; the latest grant or block on an app replaces the other. When the situation changes the phone re-locks and sends an `event` ("Bedtime until 7:00 AM") and a fresh `state`. Ringing changes are announced with `event` and a fresh `state`. Screenshot views are logged as an `event`, at most once per parent every 5 minutes.
 
@@ -78,4 +80,4 @@ Files sent either way (`file` replies and `files` `put`) use a pieced format so 
 
 ## Attachments (screenshots, icons)
 
-The phone uploads the screenshot with an ntfy `PUT` (`Filename: blob.bin`) and puts the sealed `shot` message in the `Message` header, so subscribers receive one ntfy message whose `message` is the sealed JSON and whose `attachment.url` points at the file. The file is `iv[12] ‖ AES-256-GCM(JPEG ‖ tag)` (raw bytes, not base64) under the same key with AAD `phonelock/blob/<id of the shot message>`, which binds it to that message. ntfy.sh deletes attachments after about 3 hours. Parents only download from the phone's own ntfy server, and only for requests they sent.
+The phone uploads the screenshot with an ntfy `PUT` (`Filename: blob.bin`) and puts the sealed `shot` message in the `Message` header, so subscribers receive one ntfy message whose `message` is the sealed JSON and whose `attachment.url` points at the file. The file is `iv[12] ‖ AES-256-GCM(JPEG ‖ tag)` (raw bytes, not base64) under the same key with AAD `phonelock/blob/<id of the shot message>`, which binds it to that message. ntfy.sh deletes attachments after about 3 hours. Parents only download from the phone's own ntfy server, and only for requests they sent (or a `seen` report, which every parent receives).

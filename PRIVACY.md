@@ -21,7 +21,7 @@ The lock app sends the following from the child's device to the paired parents:
 - **Connections**: the names of new Wi-Fi networks the child joins and Bluetooth devices they pair.
 - **Calls and contacts**: the call log (numbers, names, times, durations) and contacts, so parents can review calls and manage a safe list.
 - **Files**: names and contents of files, photos and videos in the device's shared storage, only when a parent browses or downloads them.
-- **Screen**: a screenshot of the current screen, only when a parent taps View screen. The child is notified every time.
+- **Screen**: a screenshot of the current screen when a parent taps View screen, or, without a parent asking, when an unfamiliar Google services screen opens on the child's device (at most once a day per screen, until a parent marks it OK or blocks it). The child is notified every time. The parent app keeps these unasked screenshots until a parent deals with them.
 - **Diagnostics**: a technical report (settings, permissions and the lock app's own log) when a parent asks for one.
 
 The parent app sends the parent's instructions (for example "allow this app for 30 minutes") and the name the parent chose to show on the child's device.

@@ -402,6 +402,17 @@ public final class Remote {
                 if (!live(m) && !"stop".equals(m.optString("op"))) break;
                 ring(c, m, who);
                 break;
+            case "screenrule": {
+                // A parent's decision about a Google services screen: "ok", "block", or "" to forget it.
+                String cls = m.optString("screen"), rule = m.optString("rule");
+                ScreenGuard.setRule(c, cls, rule);
+                String name = ScreenGuard.shortName(cls);
+                event(c, "ok".equals(rule) ? who + " allowed the Google services screen " + name
+                        : "block".equals(rule) ? who + " blocked the Google services screen " + name
+                        : who + " reset the Google services screen " + name, who, false);
+                sendState(c, true);
+                break;
+            }
             case "screen":
                 if (!live(m)) break;
                 // The child is always told (no hidden monitoring); an old "notify": false is ignored.
@@ -574,6 +585,7 @@ public final class Remote {
                         .put("calllog", CallLogFeed.permitted(c)));
                 o.put("schedule", Schedule.rulesJson(c));
                 o.put("battAlert", Battery.alertAt(c));
+                o.put("screenRules", ScreenGuard.rulesJson(c));
             }
             // What the child is doing right now, for the parents' status card: screen on or off, and the app in front.
             android.os.PowerManager pm = c.getSystemService(android.os.PowerManager.class);
@@ -656,6 +668,7 @@ public final class Remote {
             case "req":
             case "loc":
             case "shot":
+            case "seen":
                 return true;
             case "event":
                 return !o.optBoolean("quiet");

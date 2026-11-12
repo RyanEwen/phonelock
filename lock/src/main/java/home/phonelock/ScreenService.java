@@ -20,7 +20,8 @@ import java.io.ByteArrayOutputStream;
  * capture without the child approving each time (MediaProjection asks on every session). It is enabled
  * once over adb (see tools/configure-lock.sh) and the device owner policy keeps any other service out.
  *
- * It listens to no accessibility events; it exists only for {@link #takeScreenshot}.
+ * It also hears which screen comes to the front ({@link ScreenGuard} uses that to keep Google services
+ * screens that lead out of the lock shut), and takes the screenshots of unknown ones sent to parents.
  */
 public class ScreenService extends AccessibilityService {
     /** Longest edge of the image sent to parents, in pixels. Keeps a shot around 100 KB. */
@@ -45,7 +46,11 @@ public class ScreenService extends AccessibilityService {
     }
 
     @Override
-    public void onAccessibilityEvent(AccessibilityEvent event) {}
+    public void onAccessibilityEvent(AccessibilityEvent event) {
+        if (event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            ScreenGuard.onWindow(this, event.getPackageName(), event.getClassName());
+        }
+    }
 
     @Override
     public void onInterrupt() {}
@@ -57,14 +62,31 @@ public class ScreenService extends AccessibilityService {
      * the picture) and the view is logged for the parents.
      */
     static void capture(Context c, String req, String who) {
+        String app = instance == null ? null : instance.foregroundPackage();
+        snap(c, (jpeg, error) -> {
+            reply(c, req, jpeg, error, app);
+            if (jpeg != null) recordView(c, who);
+        });
+    }
+
+    /** Receives a screenshot as JPEG, or why there isn't one ({@code jpeg} null, {@code error} set). */
+    interface Shot {
+        void done(byte[] jpeg, String error);
+    }
+
+    /**
+     * Takes a screenshot of whatever is on screen and hands it to {@code then} (on a background thread
+     * when it succeeds). Tells no one; callers decide who sees it and who is told.
+     */
+    static void snap(Context c, Shot then) {
         ScreenService s = instance;
         if (s == null) {
-            reply(c, req, null, "Screen view isn't switched on. On the device, unlock parent mode and turn on Settings > Accessibility > Parent screen view", null);
+            then.done(null, "Screen view isn't switched on. On the device, unlock parent mode and turn on Settings > Accessibility > Parent screen view");
             return;
         }
         PowerManager pm = c.getSystemService(PowerManager.class);
         if (!pm.isInteractive()) {
-            reply(c, req, null, "The screen is off", null);
+            then.done(null, "The screen is off");
             return;
         }
         String app = s.foregroundPackage();
@@ -72,19 +94,20 @@ public class ScreenService extends AccessibilityService {
             @Override public void onSuccess(ScreenshotResult r) {
                 // Compression is slow-ish; keep it off the main thread.
                 new Thread(() -> {
+                    byte[] jpeg;
                     try {
-                        byte[] jpeg = encode(r.getHardwareBuffer(), r.getColorSpace());
-                        reply(c, req, jpeg, null, app);
-                        recordView(c, who);
+                        jpeg = encode(r.getHardwareBuffer(), r.getColorSpace());
                     } catch (Exception e) {
                         Log.w(Policy.TAG, "shot encode: " + e);
-                        reply(c, req, null, "Couldn't capture the screen", app);
+                        then.done(null, "Couldn't capture the screen");
+                        return;
                     }
+                    then.done(jpeg, null);
                 }, "shot").start();
             }
 
             @Override public void onFailure(int code) {
-                reply(c, req, null, failure(code, app == null ? null : Remote.label(c, app)), app);
+                then.done(null, failure(code, app == null ? null : Remote.label(c, app)));
             }
         });
     }

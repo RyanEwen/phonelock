@@ -68,6 +68,7 @@ internal fun SettingsScreen(dev: String, name: String, onOpen: (String) -> Unit,
             Setting("📶", "Fix setup over Wi-Fi", "Repairs permissions using wireless debugging") { onOpen("fixsetup") }
             Setting("🛠", "Recovery: turn on debugging…", "For repairs from a computer") { recovery = true }
         }
+        ScreenRulesSection(dev, st)
         AppUpdateSection()
         Section("Sharing") {
             Setting("👥", "Share with another parent…", "Lets another parent's phone manage this device") { sharing = true }
