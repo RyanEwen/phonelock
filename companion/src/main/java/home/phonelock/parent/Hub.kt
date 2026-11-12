@@ -96,6 +96,7 @@ class App : Application() {
         LocationHistory.init(this)
         AppTime.init(this)
         ChildSetup.init(this)
+        AppUpdate.init(this)
         Push.init(this)
         Push.sync(Hub.devices.value)
     }

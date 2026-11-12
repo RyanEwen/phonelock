@@ -1,7 +1,8 @@
 #!/bin/bash
 # Build both apps inside WSL.
 #   lock/build/outputs/apk/release/lock-release.apk            (child's phone)
-#   companion/build/outputs/apk/release/companion-release.apk  (parents' phones)
+#   companion/build/outputs/apk/github/release/companion-github-release.apk  (parents' phones, GitHub build;
+#   the Play build is companion:assemblePlayRelease, built only when asked for)
 set -e
 cd "$(dirname "$0")"
 export ANDROID_HOME="$HOME/android-sdk"
@@ -15,5 +16,5 @@ if [ ! -f secrets/phonelock.keystore ]; then
     -alias phonelock -keyalg RSA -keysize 2048 -validity 36500 -dname "CN=PhoneLock" >/dev/null
   (umask 077; printf 'storePassword=%s\nkeyPassword=%s\n' "$pw" "$pw" > secrets/signing.properties)
 fi
-"$HOME/tools/gradle-9.9.1/bin/gradle" --no-daemon -q assembleRelease "$@"
-ls -l lock/build/outputs/apk/release/*.apk companion/build/outputs/apk/release/*.apk
+"$HOME/tools/gradle-9.9.1/bin/gradle" --no-daemon -q :lock:assembleRelease :companion:assembleGithubRelease "$@"
+ls -l lock/build/outputs/apk/release/*.apk companion/build/outputs/apk/github/release/*.apk

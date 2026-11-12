@@ -26,7 +26,7 @@ signed with the same key.
 
 In the parent app, tap **Set up a child's device** and follow the steps it shows. On the child's device (Android 13 or later, on the same Wi-Fi, with no accounts signed in): turn on Developer options, then Wireless debugging > **Pair device with pairing code**. The parent app finds it, pairs with the code, installs the lock app from the public release (checking it is signed with our key), makes it device owner, pairs it with the parent app and sets the parent PIN, turns on the features that need a one-time grant (screen view, call roles, call log, files, Do Not Disturb, battery saver exemption), confirms the device answers through the hub, then switches debugging off. Nothing is erased. Add the child's accounts back afterwards in parent mode (hold the clock 4 s, enter the PIN). The second parent adds the device from the first parent's app: device settings > **Share with another parent**. **Fix setup over Wi-Fi** in the device settings re-applies the one-time grants on a device already set up.
 
-Publishing a release (both APKs and `lock-version.json`, to the GitHub releases the setup code downloads from; installed lock apps check it a few times a day and update themselves the next time the screen is off):
+Publishing a release (both APKs with `lock-version.json` and `parent-version.json`, to the GitHub releases the setup code downloads from; installed lock apps check a few times a day and update themselves the next time the screen is off, and the parent app (GitHub build) offers its update in Settings):
 
 ```bash
 tools/publish-release.sh <version>

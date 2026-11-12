@@ -10,7 +10,7 @@ import java.util.Base64
  */
 object Setup {
     /** Public download of the lock app that setup installs. Always the newest release. */
-    const val LOCK_APK_URL = "https://github.com/RyanEwen/phonelock/releases/latest/download/lock-release.apk"
+    const val LOCK_APK_URL = Releases.LATEST + "lock-release.apk"
 
     /**
      * URL-safe base64 SHA-256 of the lock app's signing certificate (secrets/phonelock.keystore). Setup

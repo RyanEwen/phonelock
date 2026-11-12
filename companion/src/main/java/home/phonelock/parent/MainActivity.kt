@@ -123,6 +123,7 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         Hub.refreshStale()
         Push.catchUp()
+        AppUpdate.checkIfDue()
     }
 }
 

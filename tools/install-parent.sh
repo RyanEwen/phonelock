@@ -5,7 +5,7 @@ set -e
 cd "$(dirname "$0")/.."
 A=~/android-sdk/platform-tools/adb
 S=${1:?adb serial, e.g. 192.168.1.20:37000}
-$A -s "$S" install -r companion/build/outputs/apk/release/companion-release.apk
+$A -s "$S" install -r companion/build/outputs/apk/github/release/companion-github-release.apk
 if [ -n "$2" ]; then
   link=$(cat "secrets/devices/$2/pairing-link.txt")
   $A -s "$S" shell "am start -a android.intent.action.VIEW -d '$link' home.phonelock.parent" >/dev/null

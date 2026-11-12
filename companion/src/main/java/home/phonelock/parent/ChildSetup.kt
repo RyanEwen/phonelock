@@ -1,7 +1,6 @@
 package home.phonelock.parent
 
 import android.content.Context
-import android.content.pm.PackageManager
 import android.util.Log
 import android.os.Build
 import home.phonelock.parent.adb.AdbConnection
@@ -20,10 +19,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.security.MessageDigest
-import java.util.Base64
 
 enum class StepState { WAITING, RUNNING, DONE, FAILED, SKIPPED }
 
@@ -372,22 +368,13 @@ object ChildSetup {
      */
     private fun downloadLockApp(): File {
         val f = File(app.cacheDir, "lock-release.apk")
-        val h = URL(Setup.LOCK_APK_URL).openConnection() as HttpURLConnection
-        h.instanceFollowRedirects = true
-        h.connectTimeout = 20_000
-        h.readTimeout = 60_000
         try {
-            if (h.responseCode != 200) throw SetupError("Download failed (HTTP ${h.responseCode})")
-            h.inputStream.use { input -> f.outputStream().use { input.copyTo(it) } }
-        } finally {
-            h.disconnect()
+            Releases.download(Setup.LOCK_APK_URL, f, maxBytes = 50L * 1024 * 1024)
+        } catch (e: java.io.FileNotFoundException) {
+            throw SetupError("Download failed (HTTP 404)")
         }
-        val pi = app.packageManager.getPackageArchiveInfo(f.path, PackageManager.GET_SIGNING_CERTIFICATES)
-        val certs = pi?.signingInfo?.apkContentsSigners.orEmpty()
-        val sha = certs.map {
-            Base64.getUrlEncoder().withoutPadding().encodeToString(MessageDigest.getInstance("SHA-256").digest(it.toByteArray()))
-        }
-        if (pi?.packageName != LOCK_PACKAGE || sha.singleOrNull() != Setup.LOCK_SIGNATURE_SHA256) {
+        val info = Releases.inspect(app.packageManager, f)
+        if (info?.packageName != LOCK_PACKAGE || info.signer != Setup.LOCK_SIGNATURE_SHA256) {
             f.delete()
             throw SetupError("The download isn't a genuine PhoneLock lock app")
         }

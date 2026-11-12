@@ -51,6 +51,14 @@ android {
         debug { signingConfig signingConfigs.lock }
     }
 
+    // Where the app is distributed. "github" (the releases on this repo) updates itself from them; "play" is
+    // left to the Play Store, which forbids self-updating, so it has no updater or install permission.
+    flavorDimensions = ['dist']
+    productFlavors {
+        github { dimension = 'dist' }
+        play { dimension = 'dist' }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17

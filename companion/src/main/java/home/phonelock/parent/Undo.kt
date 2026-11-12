@@ -17,21 +17,31 @@ import kotlinx.coroutines.flow.receiveAsFlow
 
 /**
  * "Done. Undo" messages for changes that are easy to make by mistake (ticking a box, hiding an app), and
- * plain notices that a request was sent ([notify]). [UndoHost] shows them at the bottom, one at a time.
+ * plain notices that a request was sent ([notify]) or offers with a button of their own ([action]).
+ * [UndoHost] shows them at the bottom, one at a time.
  */
 object Undo {
-    private class Item(val text: String, val undo: (() -> Unit)?)
+    /** One message: [text], and optionally a button [label] that runs [run]; [long] keeps it up longer. */
+    private class Item(val text: String, val label: String?, val run: (() -> Unit)?, val long: Boolean = false)
 
     private val items = Channel<Item>(Channel.CONFLATED)
 
     /** Shows [text] with an Undo button that runs [undo]. A newer message replaces a pending one. */
     fun offer(text: String, undo: () -> Unit) {
-        items.trySend(Item(text, undo))
+        items.trySend(Item(text, "Undo", undo))
     }
 
     /** Shows [text] with no action: confirms that something was sent when its result comes later. */
     fun notify(text: String) {
-        items.trySend(Item(text, null))
+        items.trySend(Item(text, null, null))
+    }
+
+    /**
+     * Shows [text] with a button [label] that runs [run], kept up longer than an Undo since it offers
+     * something new rather than reversing a tap (for example "Version 1.0.15 is available · Update").
+     */
+    fun action(text: String, label: String, run: () -> Unit) {
+        items.trySend(Item(text, label, run, long = true))
     }
 
     /** The snackbar area; place once at the root of the screen. */
@@ -41,9 +51,9 @@ object Undo {
         LaunchedEffect(Unit) {
             items.receiveAsFlow().collect { item ->
                 host.currentSnackbarData?.dismiss()
-                val result = host.showSnackbar(item.text, actionLabel = item.undo?.let { "Undo" },
-                    duration = SnackbarDuration.Short)
-                if (result == SnackbarResult.ActionPerformed) item.undo?.invoke()
+                val result = host.showSnackbar(item.text, actionLabel = item.label,
+                    duration = if (item.long) SnackbarDuration.Long else SnackbarDuration.Short)
+                if (result == SnackbarResult.ActionPerformed) item.run?.invoke()
             }
         }
         SnackbarHost(host, Modifier.align(Alignment.BottomCenter).safeDrawingPadding())
