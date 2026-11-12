@@ -729,7 +729,7 @@ public final class Remote {
 
     /**
      * Publishes {@code o} with an encrypted binary attachment (a screenshot). ntfy stores the blob as a
-     * file (kept ~3 h on ntfy.sh) and delivers the sealed message as the text of the same ntfy message.
+     * file (kept ~3 h on ntfy.sh, 24 h on the PhoneLock hub) and delivers the sealed message as the text of the same ntfy message.
      * The blob's AAD is {@code phonelock/blob/<message id>}, binding it to this message.
      */
     static void publishWithBlob(Context c, JSONObject o, byte[] blob) {

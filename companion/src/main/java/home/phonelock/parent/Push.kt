@@ -87,20 +87,24 @@ object Push {
 
     /**
      * Fetches messages for pushed devices that arrived while push was down or dropped (FCM discards
-     * pending messages past its limit), from the hub's 12 h cache. Duplicates are ignored by [Hub].
+     * pending messages past its limit), from the hub's cache. Duplicates are ignored by [Hub]. Returns
+     * at once.
      */
     fun catchUp() {
+        thread(name = "push-catchup") { catchUpNow() }
+    }
+
+    /** [catchUp], waiting until it's done (for checks that need the newest news first). Blocks. */
+    fun catchUpNow() {
         if (!enabled) return
         val devices = Hub.devices.value.filter(::covers)
         if (devices.isEmpty()) return
-        thread(name = "push-catchup") {
-            devices.groupBy { it.server }.forEach { (server, devs) ->
-                val last = Hub.lastNtfyTime
-                val since = if (last > 0) (last - 60).toString() else "12h"
-                poll("$server/${devs.joinToString(",") { it.topic }}/json?poll=1&since=$since") { m ->
-                    Hub.lastNtfyTime = maxOf(Hub.lastNtfyTime, m.optLong("time"))
-                    Hub.handle(m.optString("topic"), m.optString("message"), attachmentOf(m))
-                }
+        devices.groupBy { it.server }.forEach { (server, devs) ->
+            val last = Hub.lastNtfyTime
+            val since = if (last > 0) (last - 60).toString() else "12h"
+            poll("$server/${devs.joinToString(",") { it.topic }}/json?poll=1&since=$since") { m ->
+                Hub.lastNtfyTime = maxOf(Hub.lastNtfyTime, m.optLong("time"))
+                Hub.handle(m.optString("topic"), m.optString("message"), attachmentOf(m))
             }
         }
     }

@@ -57,6 +57,7 @@ internal fun SettingsScreen(dev: String, name: String, onOpen: (String) -> Unit,
             Setting("🔓", "Parent mode…", "Unlock Settings and the Play Store on their device for a while") { parentMode = true }
             Setting("🔑", "Change parent PIN…", "Used on their device by holding the clock for 4 seconds") { changingPin = true }
             BatteryAlertSetting(dev, st)
+            QuietAlertSetting(dev)
         }
         Section("Lock app") {
             Text(buildString {

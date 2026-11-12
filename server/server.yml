@@ -3,17 +3,18 @@
 # Cloudflare's ranges) as X-Forwarded-For, so rate limits apply per household, not per Cloudflare edge.
 behind-proxy: true
 
-# Messages kept 24 h so a device that was off overnight still gets a long grant or block (up to 24 h);
-# attachments (screenshots, icons) 3 h.
+# Messages kept 3 days, so a parent phone that was off for a weekend still gets the child's location
+# check-ins (and a device that was off overnight a long grant or block); attachments (screenshots, icons,
+# larger batches of check-ins, files) 24 h.
 cache-file: /var/cache/ntfy/cache.db
-cache-duration: 24h
+cache-duration: 72h
 attachment-cache-dir: /var/cache/ntfy/attachments
 # Files from parent file management go up to 50 MB (Cloudflare's upload cap is 100 MB).
 attachment-file-size-limit: 50M
-# The apps host's disk is shared with other services (29 GB free in Nov 2026); attachments expire in 3 h,
-# so a few GB is far more than a busy day needs.
+# The apps host's disk is shared with other services (29 GB free in Nov 2026); attachments expire in 24 h,
+# and the total cap keeps them from ever using more than a few GB.
 attachment-total-size-limit: 3G
-attachment-expiry-duration: 3h
+attachment-expiry-duration: 24h
 
 # Firebase Cloud Messaging (each message also goes to the FCM topic of the same name, so the parent app
 # needs no permanent "listening" notification) is switched on with NTFY_FIREBASE_KEY_FILE in .env.

@@ -32,7 +32,7 @@ Each child device has its own secret key, created at setup and shared only with 
 
 ## Servers and services
 
-- **Relay server ("hub")**: messages pass through our self-hosted relay at phonelock.dynamic-solutions.ca. It stores encrypted messages for up to 24 hours and encrypted attachments for up to 3 hours so devices that were offline can catch up, then deletes them. Like any web server, it sees the IP address of each connecting device and the random channel name the devices share, and keeps access logs for security and rate limiting for 14 days.
+- **Relay server ("hub")**: messages pass through our self-hosted relay at phonelock.dynamic-solutions.ca. It stores encrypted messages for up to 3 days and encrypted attachments for up to 24 hours so devices that were offline can catch up, then deletes them. Like any web server, it sees the IP address of each connecting device and the random channel name the devices share, and keeps access logs for security and rate limiting for 14 days.
 - **Google Firebase Cloud Messaging**: delivers notifications to the parent app. Google receives the same encrypted messages and a device token for the parent's phone, under [Google's privacy policy](https://policies.google.com/privacy).
 - **GitHub**: the lock app checks GitHub's public release page for updates and downloads them from there.
 - **Address lookup**: the parent app turns locations into street addresses with Android's built-in geocoder, which on most phones is provided by Google, so Google receives those positions (without knowing whose device they came from).
@@ -40,7 +40,7 @@ Each child device has its own secret key, created at setup and shared only with 
 
 ## What stays on each device
 
-- **Parent's phone:** its copy of the information above (location history, call log, activity list, settings). Screenshots are kept in memory only and never saved, unless the parent downloads a file on purpose.
+- **Parent's phone:** its copy of the information above (location history, call log, activity list, settings). Screenshots a parent asks for are kept in memory only and never saved; screenshots of unfamiliar screens are kept until a parent marks them OK, blocks or dismisses them (at most 20 per device).
 - **Child's device:** the location log (7 days) and its settings.
 
 Removing a device in the parent app, or uninstalling either app, deletes that app's copy.
@@ -51,7 +51,7 @@ PhoneLock is meant to be set up and used by a parent or legal guardian on a devi
 
 ## Your choices
 
-Parents can stop sharing at any time by removing the device from the parent app, or by removing PhoneLock from the child's device [TODO: needs the planned "Remove PhoneLock" option in parent mode; see play/open-questions.md]. Because we cannot read the data, we cannot look it up or hand it over. The relay server deletes everything it holds within 24 hours.
+Parents can stop sharing at any time by removing the device from the parent app, or by removing PhoneLock from the child's device [TODO: needs the planned "Remove PhoneLock" option in parent mode; see play/open-questions.md]. Because we cannot read the data, we cannot look it up or hand it over. The relay server deletes everything it holds within 3 days.
 
 ## Contact
 

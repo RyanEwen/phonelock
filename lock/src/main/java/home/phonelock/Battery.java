@@ -21,6 +21,8 @@ final class Battery {
     private static final int REARM_MARGIN = 5;
     /** How long a shutdown may hold up to get its notice out. */
     private static final long SHUTDOWN_SEND_MS = 4_000;
+    /** Then how long sending the last unsent location readings may take (Android waits about 10 s in all). */
+    private static final long SHUTDOWN_FLUSH_MS = 3_000;
 
     private Battery() {}
 
@@ -114,7 +116,8 @@ final class Battery {
         if (at == 0 || alerted || level > at) return;
 
         p.edit().putBoolean("batt_alerted", true).apply();
-        Outbox.alert(c, "Battery low: " + level + "%");
+        // Where she last was goes with it, in case the phone dies before the parents look.
+        Outbox.alert(c, "Battery low: " + level + "%", LocationLog.lastPlace(c));
     }
 
     /**
@@ -147,7 +150,13 @@ final class Battery {
                     : "Turning off" + (level >= 0 ? " (battery " + level + "%)" : "");
             JSONObject o = Remote.msg("event");
             o.put("text", text);
+            // Tells parents' apps the silence that follows is the phone being off, not lost signal.
+            o.put("off", true);
+            JSONObject where = LocationLog.lastPlace(c);
+            if (where != null) o.put("where", where);
+            // The notice first (it matters most), then any readings not sent yet, in the time left.
             Remote.publishNow(c, o, SHUTDOWN_SEND_MS);
+            LocationLog.flush(c, SHUTDOWN_FLUSH_MS, false);
         } catch (Exception e) {
             Log.w(Policy.TAG, "shutdown notice: " + e);
         }

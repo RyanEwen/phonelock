@@ -136,6 +136,35 @@ object LocationHistory {
         }.onFailure { Log.w(TAG, "app history save: $it") }
     }
 
+    /**
+     * The street address of [p], looked up now if it isn't known yet, waiting at most [timeoutMs]; null if
+     * there's no geocoder, no network or no answer in time. For notifications, which can't update later.
+     * Blocks; call off the main thread.
+     */
+    fun addressNow(p: Place, timeoutMs: Long = 5_000): String? {
+        _addresses.value[p.spot]?.let { return it }
+        if (!Geocoder.isPresent()) return null
+        val done = java.util.concurrent.CountDownLatch(1)
+        var line: String? = null
+        try {
+            Geocoder(app).getFromLocation(p.lat, p.lng, 1, object : Geocoder.GeocodeListener {
+                override fun onGeocode(results: MutableList<android.location.Address>) {
+                    line = results.firstOrNull()?.getAddressLine(0)
+                    done.countDown()
+                }
+                override fun onError(errorMessage: String?) = done.countDown()
+            })
+            done.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (e: Exception) {
+            Log.w(TAG, "geocode now: $e")
+        }
+        line?.let { l -> _addresses.update { it + (p.spot to l) } }
+        return line
+    }
+
+    /** [ts] as this phone shows times ("2:40 p.m."), for notification text. */
+    fun clock(ts: Long): String = android.text.format.DateFormat.getTimeFormat(app).format(java.util.Date(ts))
+
     /** Looks up the address for [p] once, in the background; the result lands in [addresses]. */
     fun lookUp(p: Place) {
         val spot = p.spot

@@ -28,15 +28,20 @@ final class Outbox {
 
     /** Queues an alert for the parents (a notification on their phones) and tries to send it now. */
     static void alert(Context c, String text) {
-        add(c, text, false);
+        add(c, text, false, null);
+    }
+
+    /** Like {@link #alert}, also saying where the device last was ({@code where}, see LocationLog#lastPlace). */
+    static void alert(Context c, String text, JSONObject where) {
+        add(c, text, false, where);
     }
 
     /** Queues routine news for the parents' activity lists, without a notification. */
     static void note(Context c, String text) {
-        add(c, text, true);
+        add(c, text, true, null);
     }
 
-    private static void add(Context c, String text, boolean quiet) {
+    private static void add(Context c, String text, boolean quiet, JSONObject where) {
         if (!Remote.paired(c)) return; // nobody to tell yet; don't pile up notes
         synchronized (Outbox.class) {
             try {
@@ -44,8 +49,10 @@ final class Outbox {
                 JSONArray a = new JSONArray(p.getString("outbox_alerts", "[]"));
                 // The message id is fixed now and reused on every retry, so if a send that timed out did
                 // reach the hub after all, the parents drop the retry as a duplicate.
-                a.put(new JSONObject().put("text", text).put("quiet", quiet).put("at", System.currentTimeMillis())
-                        .put("id", Crypto.randomId()));
+                JSONObject item = new JSONObject().put("text", text).put("quiet", quiet)
+                        .put("at", System.currentTimeMillis()).put("id", Crypto.randomId());
+                if (where != null) item.put("where", where);
+                a.put(item);
                 p.edit().putString("outbox_alerts", a.toString()).commit();
             } catch (Exception e) {
                 Log.w(Policy.TAG, "outbox: " + e);
@@ -120,6 +127,7 @@ final class Outbox {
                     boolean late = System.currentTimeMillis() - at > 2 * 60_000L;
                     o.put("text", next.optString("text") + (late ? " (at " + Remote.time(c, at) + ")" : ""));
                     if (next.optBoolean("quiet")) o.put("quiet", true);
+                    if (next.has("where")) o.put("where", next.getJSONObject("where"));
                     sent = Remote.publishNow(c, o, SEND_TIMEOUT_MS);
                 } catch (Exception e) {
                     sent = false;

@@ -313,6 +313,25 @@ final class LocationLog {
         }, "track").start();
     }
 
+    /**
+     * Where the device last was, for the parents' last-gasp notices (low battery, turning off):
+     * {@code lat}, {@code lng}, {@code at} (ms, last seen there), {@code acc}; null if the log is empty.
+     */
+    static JSONObject lastPlace(Context c) {
+        try {
+            JSONArray log;
+            synchronized (LocationLog.class) {
+                log = load(c);
+            }
+            JSONObject e = log.length() == 0 ? null : log.optJSONObject(log.length() - 1);
+            if (e == null || !e.has("lat")) return null;
+            return new JSONObject().put("lat", e.getDouble("lat")).put("lng", e.getDouble("lng"))
+                    .put("at", e.optLong("to")).put("acc", e.optInt("acc"));
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
     /** An entry without the device-only fields. */
     private static JSONObject forParents(JSONObject e) {
         JSONObject o = new JSONObject();

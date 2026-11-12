@@ -8,7 +8,31 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.unit.dp
+
+/**
+ * Device settings row: how long the device may go without a word before this phone alerts (see
+ * [QuietWatch]). Unlike the battery alert, it's this parent's own choice, kept on this phone.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun QuietAlertSetting(dev: String) {
+    val all by QuietWatch.minutes.collectAsState()
+    val current = all[dev] ?: QuietWatch.minutesFor(dev)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Alert me when there's no word from it for", style = MaterialTheme.typography.labelLarge)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            QuietWatch.CHOICES.forEach { m ->
+                FilterChip(selected = current == m, onClick = { QuietWatch.setMinutes(dev, m) },
+                    label = { Text(if (m == 0) "Off" else if (m < 60) "$m min" else "${m / 60} h") })
+            }
+        }
+        Text("Only on this phone. Says where it was last and its battery.", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
 
 /** Low-battery alert levels offered to parents, in percent; 0 is "Off". */
 private val ALERT_LEVELS = listOf(0, 10, 15, 20, 30)

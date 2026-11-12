@@ -102,6 +102,7 @@ class App : Application() {
         AppUpdate.init(this)
         Push.init(this)
         Push.sync(Hub.devices.value)
+        QuietWatch.init(this)
     }
 }
 
@@ -251,6 +252,7 @@ object Hub {
         AppTime.forget(id)
         Pending.forget(id)
         ScreenAlerts.forget(id)
+        QuietWatch.forget(id)
         _requests.update { l -> l.filterNot { it.device == id } }
         saveDevices(); saveStates(); saveEvents(); saveRequests(); saveVitals()
         if (_devices.value.isEmpty()) ParentService.stop(app) else ParentService.restart(app)
@@ -541,16 +543,14 @@ object Hub {
                 AppIconCache.ensure(d, merged.home + merged.others + merged.notOffered + merged.grants.keys)
             }
             "event" -> if (from == "phone") {
-                val text = m.optString("text")
-                addEvent(dev, text, ts)
-                // Who caused it decides whether it's worth a notification: your own actions and routine news
-                // (bedtime starting) only go in the activity list; the other parent's are silent.
-                val by = m.optString("by").takeIf { it.isNotEmpty() }
-                when {
-                    by != null && by == _parentName.value -> {}
-                    m.optBoolean("quiet") -> {}
-                    by != null -> notify(dev, text, null, channel = "others")
-                    else -> notify(dev, text, null)
+                if (m.optBoolean("off")) QuietWatch.noteOff(dev, ts)
+                // A last-gasp notice (low battery, turning off) says where the phone last was: add the place to
+                // the text, which means looking up the address first, off this thread.
+                val where = m.optJSONObject("where")
+                if (where != null && where.has("lat")) {
+                    thread(name = "event-where") { onEvent(dev, m, ts, m.optString("text") + lastPlaceText(where)) }
+                } else {
+                    onEvent(dev, m, ts, m.optString("text"))
                 }
             }
             "req" -> if (from == "phone") {
@@ -579,6 +579,28 @@ object Hub {
             // Another parent answered a request.
             "grant", "deny" -> m.optString("req").takeIf { it.isNotEmpty() }?.let(::resolve)
         }
+    }
+
+    /** Records event [m] from [dev] as [text] and notifies when it's worth it. */
+    private fun onEvent(dev: String, m: JSONObject, ts: Long, text: String) {
+        addEvent(dev, text, ts)
+        // Who caused it decides whether it's worth a notification: your own actions and routine news
+        // (bedtime starting) only go in the activity list; the other parent's are silent.
+        val by = m.optString("by").takeIf { it.isNotEmpty() }
+        when {
+            by != null && by == _parentName.value -> {}
+            m.optBoolean("quiet") -> {}
+            by != null -> notify(dev, text, null, channel = "others")
+            else -> notify(dev, text, null)
+        }
+    }
+
+    /** " · last near 12 Main St at 2:40 p.m." for a last-gasp notice's [where] {lat, lng, at}. */
+    private fun lastPlaceText(where: JSONObject): String {
+        val at = where.optLong("at")
+        val p = Place(at, at, where.getDouble("lat"), where.getDouble("lng"))
+        val address = LocationHistory.addressNow(p) ?: return ""
+        return " · last near $address" + if (at > 0) " at ${LocationHistory.clock(at)}" else ""
     }
 
     private fun parseState(m: JSONObject): PhoneState {
@@ -640,6 +662,8 @@ object Hub {
      */
     private fun noteVitals(dev: String, m: JSONObject, ts: Long) {
         val now = System.currentTimeMillis()
+        val before = maxOf(_vitals.value[dev]?.seen ?: 0, _states.value[dev]?.updated ?: 0)
+        if (ts > before) QuietWatch.heard(dev, before)
         _vitals.update { all ->
             val v = all[dev] ?: Vitals()
             var next = if (ts > v.seen) v.copy(seen = ts) else v
@@ -707,7 +731,7 @@ object Hub {
     }
 
     /** Posts [text] for [dev]; with a request [r] it gets answer buttons. [channel] overrides the default. */
-    private fun notify(dev: String, text: String, r: Request?, channel: String? = null) {
+    internal fun notify(dev: String, text: String, r: Request?, channel: String? = null) {
         channels(app)
         val open = PendingIntent.getActivity(app, dev.hashCode(),
             Intent(app, MainActivity::class.java).putExtra("device", dev), PendingIntent.FLAG_IMMUTABLE)
