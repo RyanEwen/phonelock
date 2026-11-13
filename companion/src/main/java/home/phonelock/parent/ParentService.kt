@@ -107,6 +107,11 @@ class ParentService : Service() {
 class ActionReceiver : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
         // A screen alert's "Mark OK" or "Block" carries the alert id instead of a request.
+        if (i.getStringExtra("kind") == "allowscreen") {
+            Hub.setScreenRule(i.getStringExtra("device") ?: return, i.getStringExtra("screen") ?: return, "ok", minutes = 30)
+            c.getSystemService(android.app.NotificationManager::class.java).cancel(i.getIntExtra("nid", 0))
+            return
+        }
         val alert = i.getStringExtra("alert")
         if (alert != null) {
             ScreenAlerts.decide(alert, i.getStringExtra("kind") ?: return)

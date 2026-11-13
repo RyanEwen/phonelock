@@ -79,20 +79,64 @@ internal fun ScreenAlertsSection(dev: String) {
 }
 
 /**
- * Settings' "Google screens" section: the screens a parent marked OK or blocked on this device, each with
- * a menu to forget the decision. Hidden when there are none.
+ * Settings' "Google screens" section: the groups of Google screens the device blocks unless allowed (account
+ * management, Google settings, help, feedback, Quick Share), then single screens a parent decided about. Each
+ * row says where it stands and has a menu to allow it (always, for a while, or until bedtime), block it, or go
+ * back to the default. Hidden until the device reports its groups (an older lock app doesn't).
  */
 @Composable
 internal fun ScreenRulesSection(dev: String, state: PhoneState?) {
-    val rules = state?.screenRules.orEmpty()
-    if (rules.isEmpty()) return
+    val st = state ?: return
+    val singles = st.screenRules.keys.filterNot { it.startsWith(Hub.AREA_PREFIX) }
+    if (st.screenAreas.isEmpty() && singles.isEmpty()) return
+    val now = System.currentTimeMillis()
+    // "Until bedtime" only makes sense when a bedtime is coming up; the device checks again when asked.
+    val bedtimeAhead = st.mode != "bedtime" && st.schedule.any { it.mode == "bedtime" }
+
     Section("Google screens") {
-        rules.entries.sortedBy { ScreenAlerts.screenName(it.key) }.forEach { (screen, rule) ->
-            val ok = rule == "ok"
-            ListRow(ScreenAlerts.screenName(screen),
-                AnnotatedString(if (ok) "Allowed: not reported" else "Blocked: she's sent back from it"),
-                leading = { SymbolBadge(if (ok) "✓" else "⛔") },
-                actions = listOf(MenuEntry("Forget decision") { Hub.setScreenRule(dev, screen, "") }))
+        Text("Google screens that lead out of the lock. They're blocked unless you allow them; you're told when " +
+            "she's sent back from one.", style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        st.screenAreas.forEach { area ->
+            ScreenRuleRow(dev, Hub.AREA_PREFIX + area.key, area.name, st.screenRules[Hub.AREA_PREFIX + area.key],
+                blockedByDefault = true, now = now, bedtimeAhead = bedtimeAhead)
+        }
+        singles.sortedBy { ScreenAlerts.screenName(it) }.forEach { screen ->
+            ScreenRuleRow(dev, screen, ScreenAlerts.screenName(screen), st.screenRules[screen],
+                blockedByDefault = false, now = now, bedtimeAhead = bedtimeAhead)
         }
     }
+}
+
+/**
+ * One row of [ScreenRulesSection]: [title], where it stands under [rule] ("ok", "block", "ok:<until>" or none,
+ * which means blocked for an area and reported for a single screen), and its menu.
+ */
+@Composable
+private fun ScreenRuleRow(dev: String, key: String, title: String, rule: String?, blockedByDefault: Boolean,
+                          now: Long, bedtimeAhead: Boolean) {
+    val until = rule?.takeIf { it.startsWith("ok:") }?.removePrefix("ok:")?.toLongOrNull()?.takeIf { it > now }
+    val allowed = rule == "ok" || until != null
+    val decided = rule == "ok" || rule == "block" || until != null
+    val status = when {
+        rule == "ok" -> "Allowed"
+        until != null -> "Allowed until ${time(until)}"
+        rule == "block" -> "Blocked"
+        blockedByDefault -> "Blocked (default)"
+        else -> "Reported when it opens"
+    }
+
+    /** Sends a decision about this row. */
+    fun set(rule: String, minutes: Int = 0, untilBedtime: Boolean = false) =
+        Hub.setScreenRule(dev, key, rule, minutes, untilBedtime)
+
+    val entries = buildList {
+        if (rule != "ok") add(MenuEntry("Allow") { set("ok") })
+        add(MenuEntry("Allow for 15 min") { set("ok", minutes = 15) })
+        add(MenuEntry("Allow for 1 hour") { set("ok", minutes = 60) })
+        if (bedtimeAhead) add(MenuEntry("Allow until bedtime") { set("ok", untilBedtime = true) })
+        if (rule != "block") add(MenuEntry("Block") { set("block") })
+        if (decided) add(MenuEntry(if (blockedByDefault) "Back to blocked" else "Forget decision") { set("") })
+    }
+    ListRow(title, AnnotatedString(status), leading = { SymbolBadge(if (allowed) "✓" else "⛔") }, actions = entries)
 }

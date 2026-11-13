@@ -69,8 +69,13 @@ data class PhoneState(
     /** The app in front when this state was sent ("" for none) and when it was opened. */
     val using: String = "",
     val usingSince: Long = 0,
-    /** Parents' decisions about Google services screens: screen class -> "ok" or "block" (full state). */
+    /**
+     * Parents' decisions about Google services screens (full state): a screen class or "area:" + an area's
+     * key -> "ok", "block" or "ok:<until ms>" (allowed for a while).
+     */
     val screenRules: Map<String, String> = emptyMap(),
+    /** The groups of Google screens the device blocks unless a parent allows them (full state). */
+    val screenAreas: List<ScreenArea> = emptyList(),
 ) {
     fun label(pkg: String) = labels[pkg] ?: pkg
 }
@@ -87,6 +92,9 @@ data class Vitals(val seen: Long = 0, val battery: Int = -1, val charging: Boole
 data class Request(val device: String, val req: String, val app: String, val label: String,
                    val minutes: Long, val ts: Long)
 data class Event(val ts: Long, val text: String)
+
+/** A group of Google services screens the device blocks by default ("account", "Manage your Google Account"). */
+data class ScreenArea(val key: String, val name: String)
 
 class App : Application() {
     override fun onCreate() {
@@ -363,13 +371,23 @@ object Hub {
     }
 
     /**
-     * Records a decision about Google services screen [screen] on [dev]: "ok" (never report it), "block"
-     * (send her back from it), or "" (forget the decision; it's reported again next time).
+     * Records a decision about Google services screen or area [key] (a screen class, or "area:" + an area's
+     * key) on [dev]: "ok" (allow it; for [minutes] if above 0, or until bedtime with [untilBedtime]), "block"
+     * (send her back from it), or "" (forget the decision: back to the default).
      */
-    fun setScreenRule(dev: String, screen: String, rule: String) {
-        editState(dev) { st -> st.copy(screenRules = if (rule.isEmpty()) st.screenRules - screen else st.screenRules + (screen to rule)) }
-        send(dev, msg("screenrule").put("screen", screen).put("rule", rule))
+    fun setScreenRule(dev: String, key: String, rule: String, minutes: Int = 0, untilBedtime: Boolean = false) {
+        // Shown at once; a timed allow's exact end comes with the device's reply.
+        val shown = if (rule == "ok" && minutes > 0) "ok:${System.currentTimeMillis() + minutes * 60_000L}" else rule
+        editState(dev) { st -> st.copy(screenRules = if (rule.isEmpty()) st.screenRules - key else st.screenRules + (key to shown)) }
+        val m = msg("screenrule").put("rule", rule)
+        if (key.startsWith(AREA_PREFIX)) m.put("area", key.removePrefix(AREA_PREFIX)) else m.put("screen", key)
+        if (minutes > 0) m.put("minutes", minutes)
+        if (untilBedtime) m.put("untilBedtime", true)
+        send(dev, m)
     }
+
+    /** Prefix of a Google screens area's key in [PhoneState.screenRules]. */
+    const val AREA_PREFIX = "area:"
 
     /** Replaces the phone's weekly schedule. */
     fun setSchedule(dev: String, rules: List<ScheduleRule>) {
@@ -526,7 +544,7 @@ object Hub {
                         _states.update { it + (dev to old.copy(others = s.others.filterNot { p -> p in old.home },
                             notOffered = s.notOffered, labels = s.labels + old.labels, masks = s.masks,
                             schedule = s.schedule, calls = s.calls, canFiles = s.canFiles, canCallLog = s.canCallLog,
-                            removable = s.removable, battAlert = s.battAlert, screenRules = s.screenRules, full = true)) }
+                            removable = s.removable, battAlert = s.battAlert, screenRules = s.screenRules, screenAreas = s.screenAreas, full = true)) }
                         saveStates()
                     }
                     return
@@ -537,7 +555,7 @@ object Hub {
                     else s.copy(others = old.others.filterNot { it in s.home }, notOffered = old.notOffered, labels = old.labels + s.labels,
                         masks = old.masks, schedule = old.schedule, full = old.full, calls = old.calls,
                         canFiles = old.canFiles, canCallLog = old.canCallLog, removable = old.removable,
-                        battAlert = old.battAlert, screenRules = old.screenRules)
+                        battAlert = old.battAlert, screenRules = old.screenRules, screenAreas = old.screenAreas)
                 _states.update { it + (dev to merged) }
                 saveStates()
                 AppIconCache.ensure(d, merged.home + merged.others + merged.notOffered + merged.grants.keys)
@@ -584,6 +602,13 @@ object Hub {
     /** Records event [m] from [dev] as [text] and notifies when it's worth it. */
     private fun onEvent(dev: String, m: JSONObject, ts: Long, text: String) {
         addEvent(dev, text, ts)
+        // A blocked Google screen: offer to let her through for a while, right from the notification.
+        val blocked = m.optString("area").takeIf { it.isNotEmpty() }?.let { AREA_PREFIX + it }
+            ?: m.optString("screen").takeIf { it.isNotEmpty() }
+        if (blocked != null) {
+            notify(dev, text, null, allowScreen = blocked)
+            return
+        }
         // Who caused it decides whether it's worth a notification: your own actions and routine news
         // (bedtime starting) only go in the activity list; the other parent's are silent.
         val by = m.optString("by").takeIf { it.isNotEmpty() }
@@ -630,7 +655,10 @@ object Hub {
             if (m.has("screenOn")) m.optBoolean("screenOn") else null,
             m.optJSONObject("using")?.optString("app") ?: "",
             m.optJSONObject("using")?.optLong("since") ?: 0,
-            m.optJSONObject("screenRules")?.let { o -> o.keys().asSequence().associateWith { o.getString(it) } } ?: emptyMap())
+            m.optJSONObject("screenRules")?.let { o -> o.keys().asSequence().associateWith { o.getString(it) } } ?: emptyMap(),
+            m.optJSONArray("screenAreas")?.let { a ->
+                (0 until a.length()).mapNotNull { i -> a.optJSONObject(i)?.let { ScreenArea(it.optString("key"), it.optString("name")) } }
+            } ?: emptyList())
     }
 
     private fun stateJson(s: PhoneState) = JSONObject().put("ts", s.updated).put("name", s.name)
@@ -645,6 +673,7 @@ object Hub {
         .put("removable", JSONArray(s.removable.toList())).put("parentUntil", s.parentUntil).put("calls", s.calls.toJson())
         .put("can", JSONObject().put("files", s.canFiles).put("calllog", s.canCallLog))
         .put("battAlert", s.battAlert).put("full", s.full).put("screenRules", JSONObject(s.screenRules as Map<*, *>))
+        .put("screenAreas", JSONArray(s.screenAreas.map { JSONObject().put("key", it.key).put("name", it.name) }))
         .also { o ->
             s.screenOn?.let { o.put("screenOn", it) }
             if (s.using.isNotEmpty()) o.put("using", JSONObject().put("app", s.using).put("since", s.usingSince))
@@ -731,7 +760,7 @@ object Hub {
     }
 
     /** Posts [text] for [dev]; with a request [r] it gets answer buttons. [channel] overrides the default. */
-    internal fun notify(dev: String, text: String, r: Request?, channel: String? = null) {
+    internal fun notify(dev: String, text: String, r: Request?, channel: String? = null, allowScreen: String? = null) {
         channels(app)
         val open = PendingIntent.getActivity(app, dev.hashCode(),
             Intent(app, MainActivity::class.java).putExtra("device", dev), PendingIntent.FLAG_IMMUTABLE)
@@ -754,6 +783,12 @@ object Hub {
             b.addAction(action("Deny", "deny", 0, base + 2))
         }
         val nid = r?.req?.hashCode() ?: (System.currentTimeMillis() and 0x7fffffff).toInt()
+        if (allowScreen != null) {
+            b.addAction(Notification.Action.Builder(null, "Allow for 30 min", PendingIntent.getBroadcast(app, nid,
+                Intent(app, ActionReceiver::class.java).putExtra("kind", "allowscreen").putExtra("device", dev)
+                    .putExtra("screen", allowScreen).putExtra("nid", nid),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)).build())
+        }
         try {
             app.getSystemService(NotificationManager::class.java).notify(nid, b.build())
         } catch (e: SecurityException) {

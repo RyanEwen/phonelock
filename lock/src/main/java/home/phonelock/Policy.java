@@ -244,7 +244,7 @@ public final class Policy {
 
     /**
      * Turns parent mode on until {@code untilMs} (0 turns it off), re-applies the policy, and brings the
-     * home screen forward so it leaves or enters lock task and shows or hides the parent bar.
+     * home screen forward so it shows or hides the parent bar.
      */
     static void setParentMode(Context c, long untilMs) {
         storeParentUntil(c, untilMs);
@@ -330,8 +330,10 @@ public final class Policy {
         }
         // Wi-Fi and Bluetooth are screens of this app, not packages (see BuiltInApps).
         dpm.setLockTaskPackages(a, lockPkgs.stream().filter(p -> !BuiltInApps.is(p)).toArray(String[]::new));
-        dpm.setLockTaskFeatures(a,
-                DevicePolicyManager.LOCK_TASK_FEATURE_SYSTEM_INFO
+        // Parent mode stays inside lock task (see HomeActivity#enforceLockTask), with the recent-apps button
+        // as well so a parent can switch between Settings and the Play Store.
+        dpm.setLockTaskFeatures(a, (parent ? DevicePolicyManager.LOCK_TASK_FEATURE_OVERVIEW : 0)
+                | DevicePolicyManager.LOCK_TASK_FEATURE_SYSTEM_INFO
                         | DevicePolicyManager.LOCK_TASK_FEATURE_NOTIFICATIONS
                         | DevicePolicyManager.LOCK_TASK_FEATURE_HOME
                         | DevicePolicyManager.LOCK_TASK_FEATURE_GLOBAL_ACTIONS

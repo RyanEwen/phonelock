@@ -385,11 +385,11 @@ public class HomeActivity extends Activity {
         if (!Policy.isOwner(this)) return;
         ActivityManager am = getSystemService(ActivityManager.class);
         boolean locked = am.getLockTaskModeState() != ActivityManager.LOCK_TASK_MODE_NONE;
-        if (Policy.inParentMode(this)) {
-            if (locked) {
-                try { stopLockTask(); } catch (Exception ignored) {}
-            }
-        } else if (!locked && Policy.dpm(this).isLockTaskPermitted(getPackageName())) {
+        // Lock task stays on in parent mode too: parent mode works by letting Settings, the Play Store and
+        // the rest into the lock (Policy.apply). Leaving it isn't possible from here: this home screen enters
+        // lock task by itself (lockTaskMode if_whitelisted), so stopping it closed the home screen, Android
+        // started a new one that locked again, and the home screen closed and reopened ten times a second.
+        if (!locked && Policy.dpm(this).isLockTaskPermitted(getPackageName())) {
             try { startLockTask(); } catch (Exception ignored) {}
         }
         updateParentBar();

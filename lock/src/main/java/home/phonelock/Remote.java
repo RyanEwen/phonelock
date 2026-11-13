@@ -403,13 +403,30 @@ public final class Remote {
                 ring(c, m, who);
                 break;
             case "screenrule": {
-                // A parent's decision about a Google services screen: "ok", "block", or "" to forget it.
-                String cls = m.optString("screen"), rule = m.optString("rule");
-                ScreenGuard.setRule(c, cls, rule);
-                String name = ScreenGuard.shortName(cls);
-                event(c, "ok".equals(rule) ? who + " allowed the Google services screen " + name
-                        : "block".equals(rule) ? who + " blocked the Google services screen " + name
-                        : who + " reset the Google services screen " + name, who, false);
+                // A parent's decision about a Google services screen or area (see ScreenGuard): rule "ok",
+                // "block" or "" to forget; an "ok" may last {@code minutes}, or until bedtime starts.
+                String area = m.optString("area");
+                String key = area.isEmpty() ? m.optString("screen") : ScreenGuard.AREA + area;
+                String rule = m.optString("rule");
+                long until = 0;
+                if ("ok".equals(rule) && m.optBoolean("untilBedtime")) {
+                    until = Schedule.nextBedtime(c);
+                    if (until == 0) {
+                        event(c, "Couldn't allow " + ScreenGuard.nameOf(key) + " until bedtime: no bedtime is coming up",
+                                who, false);
+                        break;
+                    }
+                } else if ("ok".equals(rule) && m.optLong("minutes") > 0) {
+                    long now = System.currentTimeMillis();
+                    until = Math.min(now, m.optLong("ts", now)) + Math.min(24 * 60, m.optLong("minutes")) * 60_000L;
+                    if (until <= now) break; // arrived after it would have ended
+                }
+                if (!ScreenGuard.setRule(c, key, rule, until)) break;
+                String name = ScreenGuard.nameOf(key);
+                String txt = "ok".equals(rule) ? who + " allowed " + name + (until > 0 ? " until " + time(c, until) : "")
+                        : "block".equals(rule) ? who + " blocked " + name
+                        : who + " reset " + name + " to the default";
+                event(c, txt, who, false);
                 sendState(c, true);
                 break;
             }
@@ -586,6 +603,7 @@ public final class Remote {
                 o.put("schedule", Schedule.rulesJson(c));
                 o.put("battAlert", Battery.alertAt(c));
                 o.put("screenRules", ScreenGuard.rulesJson(c));
+                o.put("screenAreas", ScreenGuard.areasJson());
             }
             // What the child is doing right now, for the parents' status card: screen on or off, and the app in front.
             android.os.PowerManager pm = c.getSystemService(android.os.PowerManager.class);

@@ -26,8 +26,9 @@ import java.util.Map;
  *   <li>anything else: left open, and the parents get a screenshot of it once, so they can mark it OK
  *       or blocked. The child is told the picture was sent, as with every screen view.</li>
  * </ul>
- * Parents' decisions are kept here (shared by both parents) and override the built-in lists. Nothing is
- * watched in parent mode, which is when a parent adds accounts through these same screens.
+ * Parents' decisions are kept here (shared by both parents) and override the built-in lists. A decision is
+ * about one screen (its class name) or a whole {@link Area}, and an allow can be for a while ("ok:<until ms>").
+ * Nothing is watched in parent mode, which is when a parent adds accounts through these same screens.
  */
 final class ScreenGuard {
     static final String GMS = "com.google.android.gms";
@@ -35,19 +36,34 @@ final class ScreenGuard {
     enum Verdict { IGNORE, ALLOW, BLOCK, ALERT }
 
     /**
-     * Screens that lead out of the lock, by class name after "com.google.android.gms" (a prefix matches a
-     * whole area). Found on a current Pixel; screens not listed here are caught by the alerts instead.
+     * A group of screens that lead out of the lock, blocked unless a parent allows the group: {@code key}
+     * names it in decisions ("area:" + key), {@code name} is what parents see, and {@code screens} are class
+     * names after "com.google.android.gms" (one ending in "." matches everything under it). Found on a
+     * current Pixel; screens not listed here are caught by the alerts instead.
      */
-    static final String[] BLOCKED = {
-            ".accountsettings.",                  // Manage your Google Account
-            ".app.settings.",                     // Google settings
-            ".googlehelp.",                       // Help pages (reach the web)
-            ".appfunctions.googlehelp.",
-            ".feedback.",                         // Send feedback
-            ".nearby.sharing.",                   // Quick Share (files from anyone nearby)
-            ".quickstart.xos.ui.XosGoogleSettingsActivity",
-            ".trustagent.activeunlock.primary.ui.activity.ActiveUnlockGoogleSettingsEntryPoint",
+    static final class Area {
+        final String key, name;
+        final String[] screens;
+
+        Area(String key, String name, String... screens) {
+            this.key = key;
+            this.name = name;
+            this.screens = screens;
+        }
+    }
+
+    static final Area[] AREAS = {
+            new Area("account", "Manage your Google Account", ".accountsettings."),
+            new Area("settings", "Google settings", ".app.settings.",
+                    ".quickstart.xos.ui.XosGoogleSettingsActivity",
+                    ".trustagent.activeunlock.primary.ui.activity.ActiveUnlockGoogleSettingsEntryPoint"),
+            new Area("help", "Google help pages", ".googlehelp.", ".appfunctions.googlehelp."),
+            new Area("feedback", "Send feedback to Google", ".feedback."),
+            new Area("quickshare", "Quick Share (files from nearby phones)", ".nearby.sharing."),
     };
+
+    /** Prefix of an area's key in the parents' decisions. */
+    static final String AREA = "area:";
 
     /** Screens other apps rely on (account picker, sign-in, consent and location prompts): never reported. */
     static final String[] NEEDED = {
@@ -81,18 +97,48 @@ final class ScreenGuard {
     private ScreenGuard() {}
 
     /**
-     * Sorts screen {@code cls} of package {@code pkg} by the parents' {@code rules} (class -> "ok" or
-     * "block") and the built-in lists. Pure, for tests.
+     * Sorts screen {@code cls} of package {@code pkg} at time {@code now} by the parents' {@code rules}
+     * (key -> "ok", "block" or "ok:<until ms>"; a screen's own decision before its area's) and the built-in
+     * lists. Pure, for tests.
      */
-    static Verdict classify(String pkg, String cls, Map<String, String> rules) {
+    static Verdict classify(String pkg, String cls, Map<String, String> rules, long now) {
         if (!GMS.equals(pkg) || cls == null || !cls.startsWith(GMS + ".")) return Verdict.IGNORE;
-        String rule = rules.get(cls);
-        if ("ok".equals(rule)) return Verdict.ALLOW;
-        if ("block".equals(rule)) return Verdict.BLOCK;
+        Verdict own = verdict(rules.get(cls), now);
+        if (own != null) return own;
         String rest = cls.substring(GMS.length());
-        if (matches(rest, BLOCKED)) return Verdict.BLOCK;
+        Area area = areaOf(rest);
+        if (area != null) {
+            Verdict a = verdict(rules.get(AREA + area.key), now);
+            return a != null ? a : Verdict.BLOCK;
+        }
         if (matches(rest, NEEDED)) return Verdict.ALLOW;
         return Verdict.ALERT;
+    }
+
+    /** What decision {@code rule} means at {@code now}: null when there is none (or a time-limited allow ran out). */
+    static Verdict verdict(String rule, long now) {
+        if (rule == null) return null;
+        if (rule.equals("ok")) return Verdict.ALLOW;
+        if (rule.equals("block")) return Verdict.BLOCK;
+        if (rule.startsWith("ok:")) {
+            try {
+                return now < Long.parseLong(rule.substring(3)) ? Verdict.ALLOW : null;
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /** The area screen {@code rest} (class name after the package) belongs to, or null. */
+    static Area areaOf(String rest) {
+        for (Area a : AREAS) if (matches(rest, a.screens)) return a;
+        return null;
+    }
+
+    private static Area areaByKey(String key) {
+        for (Area a : AREAS) if (a.key.equals(key)) return a;
+        return null;
     }
 
     private static boolean matches(String rest, String[] list) {
@@ -131,7 +177,7 @@ final class ScreenGuard {
             Context c = s.getApplicationContext();
             if (Policy.inParentMode(c)) return;
 
-            switch (classify(pkg, cls, rules(c))) {
+            switch (classify(pkg, cls, rules(c), System.currentTimeMillis())) {
                 case BLOCK:
                     block(s, c, cls);
                     break;
@@ -154,7 +200,19 @@ final class ScreenGuard {
         }, BACK_CHECK_MS);
 
         if (!due(c, "screen_block_" + cls, BLOCK_REPORT_EVERY_MS)) return;
-        Remote.event(c, "Blocked a Google services screen (" + shortName(cls) + ")" + openedFrom(c));
+        // Says which screen and area, so the parents' notification can offer to allow it for a while.
+        try {
+            Area area = areaOf(cls.substring(GMS.length()));
+            String what = area != null ? area.name : "a Google services screen (" + shortName(cls) + ")";
+            String text = "Blocked " + what + openedFrom(c);
+            JSONObject o = Remote.msg("event");
+            o.put("text", text);
+            o.put("screen", cls);
+            if (area != null) o.put("area", area.key);
+            Remote.publish(c, o, text);
+        } catch (Exception e) {
+            Log.w(Policy.TAG, "screen block report: " + e);
+        }
     }
 
     /** Sends the parents a screenshot of unknown screen {@code cls}, once it has drawn, if it's still up. */
@@ -208,7 +266,7 @@ final class ScreenGuard {
 
     // ---------- parents' decisions ----------
 
-    /** The parents' decisions: screen class -> "ok" or "block". */
+    /** The parents' decisions: screen class or "area:" key -> "ok", "block" or "ok:<until ms>". */
     static Map<String, String> rules(Context c) {
         Map<String, String> out = new LinkedHashMap<>();
         try {
@@ -223,19 +281,59 @@ final class ScreenGuard {
         return out;
     }
 
-    /** Records a parent's decision about screen {@code cls}: "ok", "block", or anything else to forget it. */
-    static void setRule(Context c, String cls, String rule) {
-        if (cls == null || !cls.startsWith(GMS + ".")) return;
+    /**
+     * Records a parent's decision about {@code key} (a screen class, or "area:" plus an area's key): "ok",
+     * "block", or anything else to forget it. An "ok" with {@code untilMs} &gt; 0 lasts until then. Returns
+     * whether the key was valid.
+     */
+    static boolean setRule(Context c, String key, String rule, long untilMs) {
+        if (!validKey(key)) return false;
         Map<String, String> all = rules(c);
-        if ("ok".equals(rule) || "block".equals(rule)) all.put(cls, rule);
-        else all.remove(cls);
+        if ("ok".equals(rule)) all.put(key, untilMs > 0 ? "ok:" + untilMs : "ok");
+        else if ("block".equals(rule)) all.put(key, "block");
+        else all.remove(key);
         SharedPreferences.Editor e = Policy.prefs(c).edit().putString("screen_rules", new JSONObject(all).toString());
         // A forgotten screen is reported again the next time it opens.
-        e.remove("screen_alert_" + cls).apply();
+        e.remove("screen_alert_" + key).apply();
+        return true;
     }
 
-    /** The decisions for the parents' state, so each parent can see and undo them. */
+    static boolean validKey(String key) {
+        if (key == null) return false;
+        if (key.startsWith(AREA)) return areaByKey(key.substring(AREA.length())) != null;
+        return key.startsWith(GMS + ".");
+    }
+
+    /** What parents call {@code key}: the area's name, or the screen's short name. */
+    static String nameOf(String key) {
+        if (key.startsWith(AREA)) {
+            Area a = areaByKey(key.substring(AREA.length()));
+            return a != null ? a.name : key;
+        }
+        return "the Google services screen " + shortName(key);
+    }
+
+    /** The decisions still in force, for the parents' state, so each parent can see and undo them. */
     static JSONObject rulesJson(Context c) {
-        return new JSONObject(rules(c));
+        long now = System.currentTimeMillis();
+        JSONObject o = new JSONObject();
+        for (Map.Entry<String, String> e : rules(c).entrySet()) {
+            if (verdict(e.getValue(), now) == null) continue; // a time-limited allow that ran out
+            try {
+                o.put(e.getKey(), e.getValue());
+            } catch (Exception ignored) {}
+        }
+        return o;
+    }
+
+    /** The built-in areas, for the parents' state: [{key, name}], blocked unless a parent allows one. */
+    static org.json.JSONArray areasJson() {
+        org.json.JSONArray a = new org.json.JSONArray();
+        for (Area area : AREAS) {
+            try {
+                a.put(new JSONObject().put("key", area.key).put("name", area.name));
+            } catch (Exception ignored) {}
+        }
+        return a;
     }
 }

@@ -254,6 +254,24 @@ final class Schedule {
     }
 
     /**
+     * When bedtime next starts (ms), or 0 if it's bedtime now or none starts within a week. For "allow until
+     * bedtime".
+     */
+    static long nextBedtime(Context c) {
+        List<Rule> rules = rules(c);
+        int manual = overrideMode(c);
+        long manualUntil = manual == 0 ? 0 : overrideUntil(c);
+        long now = System.currentTimeMillis();
+        if (modeAt(rules, manual, manualUntil, now) == BEDTIME) return 0;
+        long t = now - now % 60_000;
+        for (int i = 0; i < 8 * 1440; i++) {
+            t += 60_000;
+            if (modeAt(rules, manual, manualUntil, t) == BEDTIME) return t;
+        }
+        return 0;
+    }
+
+    /**
      * Scheduled apps allowed in the current situation, in home-screen order, minus any a parent has blocked
      * for a while ({@link Grants#loadBlocks}) and any whose daily time limit has run out ({@link AppTime}).
      */
