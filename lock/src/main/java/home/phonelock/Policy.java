@@ -305,6 +305,9 @@ public final class Policy {
         boolean isHome = current != null && current.activityInfo != null
                 && ours.equals(new ComponentName(current.activityInfo.packageName, current.activityInfo.name));
         if (!isHome) {
+            // Android restarts the home screen after this; logged so a repeat shows up in diagnostics.
+            Log.i(TAG, "home screen re-registered (resolved to "
+                    + (current == null || current.activityInfo == null ? "nothing" : current.activityInfo.name) + ")");
             IntentFilter home = new IntentFilter(Intent.ACTION_MAIN);
             home.addCategory(Intent.CATEGORY_HOME);
             home.addCategory(Intent.CATEGORY_DEFAULT);

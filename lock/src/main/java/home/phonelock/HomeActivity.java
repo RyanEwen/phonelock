@@ -331,7 +331,10 @@ public class HomeActivity extends Activity {
             registerReceiver(batteryChanged, new IntentFilter(Intent.ACTION_BATTERY_CHANGED), Context.RECEIVER_EXPORTED);
             receiversOn = true;
         }
-        Policy.applySoon(this);
+        // A safety net, not the main trigger (grants, schedules and parent mode apply on their own). Skipped
+        // right after an apply: anything in an apply that makes Android restart the home screen would
+        // otherwise start another apply, and the home screen closed and reopened several times a second.
+        if (!Policy.justApplied()) Policy.applySoon(this);
         RemoteService.start(this);
         enforceLockTask();
         refresh();

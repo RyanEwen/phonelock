@@ -66,7 +66,21 @@ public class ParentCli {
                     Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
                     c.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, all, 0, 12));
                     c.updateAAD(AAD);
-                    System.out.println(new String(c.doFinal(all, 12, all.length - 12), StandardCharsets.UTF_8));
+                    String plain = new String(c.doFinal(all, 12, all.length - 12), StandardCharsets.UTF_8);
+                    System.out.println(plain);
+                    // A message too big for ntfy travels as a "big" wrapper with the real one attached
+                    // (raw iv[12] + AES-GCM, AAD phonelock/blob/<wrapper id>): print that one too.
+                    int u = line.indexOf("\"url\":\"");
+                    if (plain.contains("\"t\":\"big\"") && u >= 0) {
+                        String url = line.substring(u + 7, line.indexOf('"', u + 7));
+                        String id = plain.replaceAll(".*\"id\":\"([^\"]+)\".*", "$1");
+                        byte[] blob = http.send(HttpRequest.newBuilder(URI.create(url)).build(),
+                                HttpResponse.BodyHandlers.ofByteArray()).body();
+                        Cipher b = Cipher.getInstance("AES/GCM/NoPadding");
+                        b.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, blob, 0, 12));
+                        b.updateAAD(("phonelock/blob/" + id).getBytes(StandardCharsets.US_ASCII));
+                        System.out.println(new String(b.doFinal(blob, 12, blob.length - 12), StandardCharsets.UTF_8));
+                    }
                 } catch (Exception e) {
                     System.out.println("(not ours) " + msg);
                 }
