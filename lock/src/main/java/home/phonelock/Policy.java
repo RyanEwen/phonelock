@@ -127,6 +127,8 @@ public final class Policy {
             // The call log for parents; Android may refuse this one to a device owner (restricted).
             android.Manifest.permission.READ_CALL_LOG,
             android.Manifest.permission.READ_PHONE_STATE,
+            // The phone's own number for emergency alerts (parents call back).
+            android.Manifest.permission.READ_PHONE_NUMBERS,
             // The Wi-Fi & Bluetooth screen: find and pair accessories.
             android.Manifest.permission.BLUETOOTH_SCAN,
             android.Manifest.permission.BLUETOOTH_CONNECT,
@@ -321,12 +323,19 @@ public final class Policy {
         // Only the scheduled apps allowed in the current situation (normal, limited hours, bedtime).
         lockPkgs.addAll(Schedule.allowedNow(c));
         lockPkgs.addAll(Arrays.asList(SUPPORT));
+        // The Phone app may always run, so incoming calls can always be answered: its incoming-call screen is
+        // part of it, and the lock would block that screen at times Phone isn't allowed. Whether its icon is
+        // on the home screen still follows the schedule; outgoing calls follow the call limits (CallGuard).
+        lockPkgs.addAll(phoneApps(c));
         lockPkgs.addAll(extraSupport(c));
         java.util.Map<String, Long> grants = Grants.load(c);
         lockPkgs.addAll(grants.keySet());
         if (parent) {
+            // Parent mode: every app may run (the home screen's "All apps" opens them), not just Settings and
+            // the Play Store. Step 4 then shows them all; they're hidden again when parent mode ends.
             lockPkgs.add("com.android.settings");
             lockPkgs.add("com.android.vending");
+            lockPkgs.addAll(launchableApps(c));
         }
         // Wi-Fi and Bluetooth are screens of this app, not packages (see BuiltInApps).
         dpm.setLockTaskPackages(a, lockPkgs.stream().filter(p -> !BuiltInApps.is(p)).toArray(String[]::new));
@@ -435,26 +444,13 @@ public final class Policy {
 
     private static void hideApps(Context c, DevicePolicyManager dpm, ComponentName a,
                                  Set<String> allowed) {
-        PackageManager pm = c.getPackageManager();
         Set<String> keep = new LinkedHashSet<>(allowed);
         keep.addAll(Arrays.asList(NEVER_HIDE));
         Set<String> extraHide = new LinkedHashSet<>();
         for (String p : prefs(c).getString("hide", "").split(","))
             if (!p.trim().isEmpty()) extraHide.add(p.trim());
 
-        Intent launcher = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
-        Set<String> launchable = new LinkedHashSet<>();
-        for (ResolveInfo ri : pm.queryIntentActivities(launcher,
-                PackageManager.MATCH_DISABLED_COMPONENTS | PackageManager.MATCH_UNINSTALLED_PACKAGES)) {
-            launchable.add(ri.activityInfo.packageName);
-        }
-        // Anything that can open web links is hidden too, launcher icon or not.
-        Intent web = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://example.com"));
-        web.addCategory(Intent.CATEGORY_BROWSABLE);
-        for (ResolveInfo ri : pm.queryIntentActivities(web, PackageManager.MATCH_ALL)) {
-            String p = ri.activityInfo.packageName;
-            if (isBrowser(pm, p)) launchable.add(p);
-        }
+        Set<String> launchable = launchableApps(c);
         launchable.addAll(extraHide);
 
         Set<String> wasHidden = new LinkedHashSet<>();
@@ -483,6 +479,44 @@ public final class Policy {
             }
         }
         prefs(c).edit().putString("hidden_by_us", String.join(",", nowHidden)).apply();
+    }
+
+    /** The device's Phone app (the default dialer) and any of the usual ones installed. */
+    static Set<String> phoneApps(Context c) {
+        Set<String> out = new LinkedHashSet<>();
+        try {
+            String d = c.getSystemService(android.telecom.TelecomManager.class).getDefaultDialerPackage();
+            if (d != null) out.add(d);
+        } catch (Exception e) {
+            Log.w(TAG, "default dialer: " + e);
+        }
+        for (String p : new String[]{"com.google.android.dialer", "com.android.dialer"}) {
+            if (isPresent(c, p)) out.add(p);
+        }
+        return out;
+    }
+
+    /**
+     * Every app the child could open: launcher apps (hidden ones included) and browsers, launcher icon or
+     * not. Hidden outside their allowed times ({@link #hideApps}); all allowed in parent mode.
+     */
+    static Set<String> launchableApps(Context c) {
+        PackageManager pm = c.getPackageManager();
+        Intent launcher = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+        Set<String> launchable = new LinkedHashSet<>();
+        for (ResolveInfo ri : pm.queryIntentActivities(launcher,
+                PackageManager.MATCH_DISABLED_COMPONENTS | PackageManager.MATCH_UNINSTALLED_PACKAGES)) {
+            launchable.add(ri.activityInfo.packageName);
+        }
+        // Anything that can open web links counts too, launcher icon or not.
+        Intent web = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://example.com"));
+        web.addCategory(Intent.CATEGORY_BROWSABLE);
+        for (ResolveInfo ri : pm.queryIntentActivities(web, PackageManager.MATCH_ALL)) {
+            String p = ri.activityInfo.packageName;
+            if (isBrowser(pm, p)) launchable.add(p);
+        }
+        launchable.remove(c.getPackageName());
+        return launchable;
     }
 
     /** A real browser resolves a generic https link without a specific host filter. */

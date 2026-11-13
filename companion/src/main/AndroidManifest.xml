@@ -7,6 +7,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- The emergency alarm plays as a foreground service (EmergencyAlerts.Alarm). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
@@ -69,6 +72,18 @@
         </provider>
 
         <receiver android:name=".ActionReceiver" android:exported="false" />
+        <!-- Emergency alerts from a child's SOS button: the full-screen alert, its buttons, the alarm. -->
+        <activity
+            android:name=".EmergencyActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:excludeFromRecents="true"
+            android:taskAffinity="home.phonelock.parent.emergency" />
+        <receiver android:name=".EmergencyAlerts$Actions" android:exported="false" />
+        <service
+            android:name=".EmergencyAlerts$Alarm"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
         <!-- QuietWatch's alarm: checks every 15 minutes whether a child's device has gone quiet. -->
         <receiver android:name=".QuietWatch$Check" android:exported="false" />
 

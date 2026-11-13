@@ -4,6 +4,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Emergency alerts open full screen, like an incoming call. Play allows this only for calling and alarm
+         apps, so the Play build shows a notification instead (the alarm still sounds). -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <application>
         <receiver android:name=".AppUpdate$Result" android:exported="false" />

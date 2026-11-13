@@ -104,6 +104,7 @@ class App : Application() {
         PhoneTools.init(this)
         DeviceData.init(this)
         ScreenAlerts.init(this)
+        EmergencyAlerts.init(this)
         LocationHistory.init(this)
         AppTime.init(this)
         ChildSetup.init(this)
@@ -261,6 +262,7 @@ object Hub {
         Pending.forget(id)
         ScreenAlerts.forget(id)
         QuietWatch.forget(id)
+        EmergencyAlerts.forget(id)
         _requests.update { l -> l.filterNot { it.device == id } }
         saveDevices(); saveStates(); saveEvents(); saveRequests(); saveVitals()
         if (_devices.value.isEmpty()) ParentService.stop(app) else ParentService.restart(app)
@@ -589,6 +591,9 @@ object Hub {
             }
             "loc", "shot" -> if (from == "phone") PhoneTools.handle(d, m, attachmentUrl)
             "seen" -> if (from == "phone") ScreenAlerts.handle(d, m, attachmentUrl)
+            "sos" -> if (from == "phone") EmergencyAlerts.handle(d, m)
+            // Another parent answered an emergency alert (this phone's own answer is already shown).
+            "sosack" -> if (from != "phone" && from != _parentName.value) EmergencyAlerts.otherAck(dev, m, from)
             "track" -> if (from == "phone") LocationHistory.handle(dev, m)
             "diag" -> if (from == "phone") Diagnostics.handle(dev, m)
             "usage" -> if (from == "phone") AppTime.handleUsage(dev, m)
@@ -732,7 +737,8 @@ object Hub {
     }
 
     /** Activity entries kept per device; the screen shows a few at a time (CappedList). */
-    private const val MAX_EVENTS = 200
+    /** About a week of events (they also fill Activity's Events), at a few dozen a day. */
+    private const val MAX_EVENTS = 1000
 
     fun addEvent(dev: String, text: String, ts: Long = System.currentTimeMillis()) {
         _events.update { m -> m + (dev to (listOf(Event(ts, text)) + (m[dev] ?: emptyList())).take(MAX_EVENTS)) }

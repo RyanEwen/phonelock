@@ -21,5 +21,6 @@ public class OutgoingCallGuard extends CallRedirectionService {
         String who = CallGuard.describe(this, number);
         Remote.notifyKid(this, "Calling " + who + " isn't allowed. Ask a parent to add it to your safe list.");
         Remote.event(this, "Tried to call " + who + " (not on the safe list)");
+        CallLogFeed.sendAttempt(this, number, who);
     }
 }

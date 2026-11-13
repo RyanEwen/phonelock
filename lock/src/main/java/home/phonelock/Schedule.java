@@ -30,7 +30,8 @@ final class Schedule {
     static final int DEFAULT_MASK = NORMAL | LIMITED;
 
     /** Apps also allowed at bedtime when the table is first created from the old home-screen list. */
-    private static final String[] BEDTIME_DEFAULTS = {"com.android.dialer", "com.google.android.deskclock"};
+    private static final String[] BEDTIME_DEFAULTS = {"com.google.android.dialer", "com.android.dialer",
+            "com.google.android.deskclock", "com.android.deskclock"};
 
     private Schedule() {}
 

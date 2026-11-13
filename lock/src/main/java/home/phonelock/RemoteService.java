@@ -61,6 +61,11 @@ public class RemoteService extends Service {
                 .build();
         startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
         getMainExecutor().execute(() -> Ringer.recover(this));
+        // An emergency alert that hadn't gone out before a restart keeps trying.
+        Emergency.resume(this);
+        // Airplane mode, mobile data, SIM card and new apps, for the parents.
+        DeviceWatch.start(this);
+        DeviceWatch.checkSims(this);
         CallLogFeed.watch(this);
         ScreenViewGuard.watch(this);
         BuiltInApps.addOnce(this);
@@ -104,6 +109,7 @@ public class RemoteService extends Service {
     @Override
     public void onDestroy() {
         running = false;
+        DeviceWatch.stop(this);
         if (screenOff != null) {
             unregisterReceiver(screenOff);
             screenOff = null;

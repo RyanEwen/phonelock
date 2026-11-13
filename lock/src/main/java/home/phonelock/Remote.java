@@ -430,6 +430,10 @@ public final class Remote {
                 sendState(c, true);
                 break;
             }
+            case "sosack":
+                // A parent got the emergency alert and is on it; she sees who on the emergency screen.
+                Emergency.acked(c, m.optString("sos"), who);
+                break;
             case "screen":
                 if (!live(m)) break;
                 // The child is always told (no hidden monitoring); an old "notify": false is ignored.
@@ -687,6 +691,7 @@ public final class Remote {
             case "loc":
             case "shot":
             case "seen":
+            case "sos":
                 return true;
             case "event":
                 return !o.optBoolean("quiet");

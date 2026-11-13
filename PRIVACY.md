@@ -16,6 +16,8 @@ PhoneLock is a parental control app made by Dynamic Solutions ("we"). It has two
 The lock app sends the following from the child's device to the paired parents:
 
 - **Location**: when a parent asks, and a log taken every 15 minutes (every 2 minutes while moving, plus positions other apps on the device obtain anyway), kept for 7 days.
+- **Emergency alerts**: when the child holds the SOS button, the device sends its location, battery level, its own phone number (so parents can call back) and any message the child adds, then a location reading every minute for 30 minutes.
+- **Device changes**: airplane mode and mobile data being turned on or off, the SIM card being removed or changed, apps being installed, unlocking parent mode on the device with the PIN and repeated wrong PIN entries, and taps on apps that aren't available at the time.
 - **Battery**: level and charging state, and notices when the device turns off or on.
 - **Apps**: the installed apps and their names and icons, the child's requests to use them, and which apps were used when and for how long (from Android's own usage record), kept on the parents' phones for 7 days.
 - **Connections**: the names of new Wi-Fi networks the child joins and Bluetooth devices they pair.

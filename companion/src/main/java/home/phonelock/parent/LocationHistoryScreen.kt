@@ -1,5 +1,8 @@
 package home.phonelock.parent
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.MultiChoiceSegmentedButtonRow
@@ -74,6 +77,11 @@ private sealed interface TimelineRow {
         override val at get() = session.from
         override val position get() = where?.latLng
     }
+    /** Something the device reported (a blocked screen, time's up, airplane mode…), from the events list. */
+    data class Note(val event: Event, val where: Place?) : TimelineRow {
+        override val at get() = event.ts
+        override val position get() = where?.latLng
+    }
     /** The device's current location: always today's last event. */
     data class Now(val loc: PhoneLocation?, val time: Long, val locating: Boolean = false) : TimelineRow {
         override val at get() = time
@@ -83,8 +91,8 @@ private sealed interface TimelineRow {
 
 /**
  * "Activity": where [dev] is and has been, and what happened there, a day at a time over the last 7 days.
- * The map stays at the top (its corner button hides it, the top bar's map button brings it back, and the
- * choice is remembered); under it, the day's timeline, newest first (places, gaps, calls and app use, with
+ * The map stays at the top (one corner button hides it, the top bar's map button brings it back, and the
+ * choice is remembered; the other corner button shows it full screen for a quick look); under it, the day's timeline, newest first (places, gaps, calls and app use, with
  * the current location as today's latest event), which scrolls on its own. Its header steps between days
  * and chooses what to show: places, calls and apps, and which apps. Tapping an event shows it on the map.
  * Opening the page, and Refresh, ask the device where it is now and for anything newer.
@@ -97,6 +105,7 @@ internal fun LocationHistoryScreen(dev: String, name: String, onBack: () -> Unit
     val allCalls by DeviceData.calls.collectAsState()
     val locations by PhoneTools.locations.collectAsState()
     val locating by PhoneTools.locating.collectAsState()
+    val allEvents by Hub.events.collectAsState()
 
     /** Asks the device where it is now, and for any readings this phone hasn't got yet. */
     fun refresh() {
@@ -114,7 +123,7 @@ internal fun LocationHistoryScreen(dev: String, name: String, onBack: () -> Unit
 
     // Every day with something on it (a place spanning several days counts for each), newest first, over
     // the 7 days kept; today is always there, for the current location.
-    val days = remember(places, allApps[dev], allCalls[dev], startOfDay(now)) {
+    val days = remember(places, allApps[dev], allCalls[dev], allEvents[dev], startOfDay(now)) {
         val cutoff = startOfDay(now - 6 * DAY_MS)
         val set = sortedSetOf(startOfDay(now))
         places.forEach { p ->
@@ -123,6 +132,7 @@ internal fun LocationHistoryScreen(dev: String, name: String, onBack: () -> Unit
         }
         allApps[dev].orEmpty().forEach { set += startOfDay(it.from) }
         allCalls[dev].orEmpty().forEach { set += startOfDay(it.ts) }
+        allEvents[dev].orEmpty().forEach { set += startOfDay(it.ts) }
         set.filter { it >= cutoff }.sortedDescending()
     }
     var day by remember(dev) { mutableLongStateOf(days.first()) }
@@ -131,6 +141,9 @@ internal fun LocationHistoryScreen(dev: String, name: String, onBack: () -> Unit
     var showPlaces by remember { mutableStateOf(true) }
     var showCalls by remember { mutableStateOf(true) }
     var showApps by remember { mutableStateOf(true) }
+    var showEvents by remember { mutableStateOf(true) }
+    // The map alone, filling the screen, for a quick look; Back or its close button returns.
+    var mapFull by remember { mutableStateOf(false) }
     // Apps chosen to show (empty: all of them); the day's apps, most used first, to choose from.
     var onlyApps by remember(dev) { mutableStateOf(setOf<String>()) }
     val dayApps = remember(allApps[dev], day) {
@@ -156,6 +169,7 @@ internal fun LocationHistoryScreen(dev: String, name: String, onBack: () -> Unit
         calls = if (showCalls) allCalls[dev].orEmpty().filter { it.ts >= day && it.ts < dayEnd } else emptyList(),
         apps = if (showApps) allApps[dev].orEmpty().filter { it.to >= day && it.from < dayEnd }
             .filter { onlyApps.isEmpty() || it.app in onlyApps } else emptyList(),
+        notes = if (showEvents) allEvents[dev].orEmpty().filter { it.ts >= day && it.ts < dayEnd } else emptyList(),
         current = nowRow,
         locating = dev in locating,
     )
@@ -168,6 +182,26 @@ internal fun LocationHistoryScreen(dev: String, name: String, onBack: () -> Unit
     val list = rememberLazyListState()
     // A new day starts at the top (its newest events); filters and taps leave the scroll where it is.
     LaunchedEffect(dev, day) { list.scrollToItem(0) }
+
+    if (mapFull) {
+        BackHandler { mapFull = false }
+        Box(Modifier.fillMaxSize()) {
+            TrailMap(
+                places = dayPlaces,
+                marker = selectedRow?.position,
+                markerTitle = selectedRow?.let { clock(it.at) },
+                selection = selectedRow,
+                addresses = addresses,
+                now = nowRow?.position,
+                modifier = Modifier.fillMaxSize(),
+            )
+            FilledTonalIconButton(onClick = { mapFull = false },
+                Modifier.align(Alignment.TopEnd).safeDrawingPadding().padding(12.dp)) {
+                Icon(Icons.Default.Close, contentDescription = "Close full-screen map")
+            }
+        }
+        return
+    }
 
     Page("Activity", onBack, scroll = false, dev = dev, waitingOn = setOf("locate", "track"), actions = {
         // With the map hidden, this brings it back (on the map, its own corner button hides it).
@@ -197,6 +231,9 @@ internal fun LocationHistoryScreen(dev: String, name: String, onBack: () -> Unit
                     FilledTonalIconButton(onClick = { setMap(false) }, Modifier.align(Alignment.TopEnd).padding(8.dp)) {
                         Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Hide map")
                     }
+                    FilledTonalIconButton(onClick = { mapFull = true }, Modifier.align(Alignment.TopStart).padding(8.dp)) {
+                        Text("⤢", style = MaterialTheme.typography.titleMedium)
+                    }
                 }
             }
             val side = @Composable { m: Modifier ->
@@ -212,8 +249,9 @@ internal fun LocationHistoryScreen(dev: String, name: String, onBack: () -> Unit
                             StepNav(dayName(day, now),
                                 onEarlier = days.getOrNull(i + 1)?.let { d -> { day = d } },
                                 onLater = days.getOrNull(i - 1)?.let { d -> { day = d } })
-                            ShowBar(showPlaces, showCalls, showApps,
-                                onPlaces = { showPlaces = it }, onCalls = { showCalls = it }, onApps = { showApps = it })
+                            ShowBar(showPlaces, showCalls, showApps, showEvents,
+                                onPlaces = { showPlaces = it }, onCalls = { showCalls = it }, onApps = { showApps = it },
+                                onEvents = { showEvents = it })
                             if (showApps && dayApps.size > 1) {
                                 AppPicker(dayApps, onlyApps, onChange = { onlyApps = it })
                             }
@@ -263,12 +301,17 @@ private fun Timeline(
     }
 }
 
-/** What the timeline shows: places, calls and app use, each on or off, as one joined bar. */
+/**
+ * What the timeline shows: places, calls, app use and events (what the device reported), each on or off, as
+ * one joined bar. Words only, so four fit across a phone.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ShowBar(places: Boolean, calls: Boolean, apps: Boolean,
-                    onPlaces: (Boolean) -> Unit, onCalls: (Boolean) -> Unit, onApps: (Boolean) -> Unit) {
-    val parts = listOf(Triple("📍 Places", places, onPlaces), Triple("📞 Calls", calls, onCalls), Triple("📱 Apps", apps, onApps))
+private fun ShowBar(places: Boolean, calls: Boolean, apps: Boolean, events: Boolean,
+                    onPlaces: (Boolean) -> Unit, onCalls: (Boolean) -> Unit, onApps: (Boolean) -> Unit,
+                    onEvents: (Boolean) -> Unit) {
+    val parts = listOf(Triple("Places", places, onPlaces), Triple("Calls", calls, onCalls), Triple("Apps", apps, onApps),
+        Triple("Events", events, onEvents))
     MultiChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
         parts.forEachIndexed { i, (label, on, set) ->
             SegmentedButton(checked = on, onCheckedChange = set,
@@ -282,10 +325,11 @@ private fun ShowBar(places: Boolean, calls: Boolean, apps: Boolean,
 
 /**
  * A day's rows in time order: its places, a "no readings" row wherever readings stopped for over [GAP_MS],
- * its calls and app use (each placed where the device was then), and, today, the [current] location last.
+ * its calls, app use and reported events ([notes]), each placed where the device was then, and, today, the
+ * [current] location last.
  */
 private fun timeline(places: List<Place>, showPlaces: Boolean, calls: List<CallEntry>, apps: List<AppSession>,
-                     current: TimelineRow.Now?, locating: Boolean): List<TimelineRow> {
+                     notes: List<Event>, current: TimelineRow.Now?, locating: Boolean): List<TimelineRow> {
     val rows = mutableListOf<TimelineRow>()
     // Places are still used to say where calls and app use happened when their own rows are hidden.
     if (showPlaces) places.forEachIndexed { i, p ->
@@ -295,6 +339,7 @@ private fun timeline(places: List<Place>, showPlaces: Boolean, calls: List<CallE
     }
     calls.forEach { rows += TimelineRow.Call(it, placeAt(places, it.ts)) }
     apps.forEach { rows += TimelineRow.App(it, placeAt(places, it.from)) }
+    notes.forEach { rows += TimelineRow.Note(it, placeAt(places, it.ts)) }
     return rows.sortedBy { it.at } + listOfNotNull(current?.copy(locating = locating))
 }
 
@@ -334,6 +379,11 @@ private fun TimelineItem(row: TimelineRow, addresses: Map<String, String>, now: 
             val s = row.session
             time = clockSpan(s.from, s.to)
             title = "📱 ${s.label}, ${fmtMinutes(maxOf(1, (s.to - s.from) / 60_000))}"
+            detail = where(row.where)
+        }
+        is TimelineRow.Note -> {
+            time = clock(row.event.ts)
+            title = "🔔 ${row.event.text}"
             detail = where(row.where)
         }
         is TimelineRow.Now -> {

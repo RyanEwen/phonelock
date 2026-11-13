@@ -66,14 +66,15 @@ final class LocationLog {
      * suspended); Android may delay it by a few minutes when idle, which is fine for a 15-minute log.
      */
     static void schedule(Context c) {
-        long every = moving(c) ? MOVING_EVERY_MS : EVERY_MS;
+        // Every minute during an emergency alert, so parents can follow where she is.
+        long every = Emergency.tracking(c) ? Emergency.TRACK_EVERY_MS : moving(c) ? MOVING_EVERY_MS : EVERY_MS;
         long now = System.currentTimeMillis();
         // Called on every service start (each return to the home screen): leave a pending alarm alone unless
         // it's further off than the current interval allows, or an overdue tick would keep being pushed back.
         long next = Policy.prefs(c).getLong("track_next_at", 0);
         if (next > now && next <= now + every) return;
         long last = Policy.prefs(c).getLong("track_tick", 0);
-        long wait = Math.max(60_000, last + every - now);
+        long wait = Math.max(Math.min(60_000, every), last + every - now);
         wait = Math.min(wait, every);
         Policy.prefs(c).edit().putLong("track_next_at", now + wait).apply();
         AlarmManager am = c.getSystemService(AlarmManager.class);
@@ -126,15 +127,16 @@ final class LocationLog {
             JSONObject last = log.length() > 0 ? log.optJSONObject(log.length() - 1) : null;
             sameWifi = last != null && wifi != null && wifi.equals(last.optString("w", null))
                     && now - last.optLong("to") < MAX_GAP_MS;
-            // Same Wi-Fi as last time and recently fixed: she's still there, no GPS needed.
-            if (sameWifi && now - last.optLong("f") < REFIX_MS) {
+            // Same Wi-Fi as last time and recently fixed: she's still there, no GPS needed. Not during an
+            // emergency alert, when every reading is a real fix.
+            if (sameWifi && now - last.optLong("f") < REFIX_MS && !Emergency.tracking(c)) {
                 extend(c, last, now, null, wifi);
                 save(c, log);
                 return;
             }
         }
 
-        Location fix = Locator.fixNow(c, false);
+        Location fix = Locator.fixNow(c, Emergency.tracking(c));
         // Getting a fix can take up to 40 s; what happens next is stamped with the time it arrived.
         now = System.currentTimeMillis();
         // A stale last-known fix would put her somewhere she was hours ago, so it counts as none.

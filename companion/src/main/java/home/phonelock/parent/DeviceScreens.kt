@@ -194,6 +194,8 @@ internal fun callKind(type: String): Pair<String, String> = when (type) {
     "missed" -> "↙" to "Missed"
     "rejected" -> "⊘" to "Declined"
     "blocked" -> "⊘" to "Blocked"
+    // A call she tried to place to a number off the safe list; it was stopped before it rang.
+    "attempt" -> "⊘" to "Blocked call attempt"
     "voicemail" -> "↙" to "Voicemail"
     else -> "•" to type
 }
@@ -202,7 +204,7 @@ internal fun callKind(type: String): Pair<String, String> = when (type) {
 internal fun callLength(seconds: Long) = "${seconds / 60}:${"%02d".format(seconds % 60)}"
 
 /** Calls the child didn't take, shown in the error colour. */
-internal val CallEntry.unanswered get() = type in setOf("missed", "rejected", "blocked")
+internal val CallEntry.unanswered get() = type in setOf("missed", "rejected", "blocked", "attempt")
 
 /**
  * One call: who, then the direction ("↗ Outgoing", with calls the child didn't take in the error colour),

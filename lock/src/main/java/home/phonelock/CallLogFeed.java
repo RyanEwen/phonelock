@@ -25,6 +25,21 @@ final class CallLogFeed {
 
     private CallLogFeed() {}
 
+    /**
+     * A call she tried to place that was stopped (off the safe list): it never reaches Android's call log, so
+     * it's sent as its own entry of type "attempt", and shows in the parents' call log and Activity.
+     */
+    static void sendAttempt(Context c, String number, String who) {
+        try {
+            JSONObject o = Remote.msg("calls");
+            o.put("entries", new JSONArray().put(new JSONObject().put("ts", System.currentTimeMillis())
+                    .put("number", number == null ? "" : number).put("name", who).put("type", "attempt").put("dur", 0)));
+            Remote.publish(c, o, null);
+        } catch (Exception e) {
+            Log.w(Policy.TAG, "call attempt: " + e);
+        }
+    }
+
     static boolean permitted(Context c) {
         return c.checkSelfPermission(Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED;
     }

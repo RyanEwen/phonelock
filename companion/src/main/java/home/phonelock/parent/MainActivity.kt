@@ -189,7 +189,8 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
             onStartMode = { startingMode = true }, onEndMode = { Hub.endMode(dev) })
         if (startingMode) StartModeDialog(name, onPick = { mode, mins -> Hub.startMode(dev, mode, mins); startingMode = false },
             onDismiss = { startingMode = false })
-        BatteryHint()
+        SetupHints()
+        EmergencySection(dev)
 
         if (requests.isNotEmpty()) Section("Requests") {
             requests.forEach { r ->
@@ -247,29 +248,6 @@ private fun MainScreen(devices: List<Device>, dev: String, onSelect: (String) ->
 
 }
 
-
-@SuppressLint("BatteryLife")
-@Composable
-private fun BatteryHint() {
-    val ctx = LocalContext.current
-    val pm = ctx.getSystemService(PowerManager::class.java)
-    // Re-check whenever the app comes back to the front, e.g. after the system "Allow" dialog.
-    var exempt by remember { mutableStateOf(pm.isIgnoringBatteryOptimizations(ctx.packageName)) }
-    LifecycleResumeEffect(Unit) {
-        exempt = pm.isIgnoringBatteryOptimizations(ctx.packageName)
-        onPauseOrDispose {}
-    }
-    if (exempt) return
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Allow background use so requests arrive right away.")
-            TextButton(onClick = {
-                ctx.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                    Uri.parse("package:${ctx.packageName}")))
-            }) { Text("Allow") }
-        }
-    }
-}
 
 /**
  * The colour of section cards: a step lighter than the page in dark mode and a step darker in light mode, so
